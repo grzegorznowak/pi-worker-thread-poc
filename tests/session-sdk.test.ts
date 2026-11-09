@@ -134,6 +134,26 @@ test("loader resolving after shutdown cannot execute main", options, async (t) =
   ]);
 });
 
+test("runner passes a JSON string to main and returns its plain JSON payload", options, async (t) => {
+  const instance = probe(t, { jsonBoundary: true });
+  const text = 'hello "JSON" \\n🧵';
+  const result = await instance.run(text);
+  assert.deepEqual(result, {
+    inputType: "string",
+    payload: { text, snapshot, mode: "normal", filePaths: { hostPath: "unused", workerPath: "unused" } },
+    plain: { values: ["text", 42, true, null], nested: { message: "JSON, not a contract wrapper" } },
+    workerPid: process.pid,
+    workerThreadId: instance.id,
+    workerIsMainThread: false,
+    workerDefinition: "primary",
+  });
+  assert.equal(Object.getPrototypeOf(result), Object.prototype);
+  assert.deepEqual(instance.callbacks, []);
+  assert.deepEqual(instance.prompts, []);
+  await instance.stop();
+  assert.equal(await instance.exited, 0);
+});
+
 test("runner binds before dynamic import and main, helpers share the same session", options, async (t) => {
   const instance = probe(t);
   const result = await instance.run();

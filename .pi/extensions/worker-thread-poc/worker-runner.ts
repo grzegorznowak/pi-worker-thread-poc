@@ -1,19 +1,24 @@
 import { isMainThread, threadId, type MessagePort } from "node:worker_threads";
 import { createClient, RpcPeer } from "./rpc.ts";
 import { bindSession, closeSession } from "./session-binding.ts";
-import { shutdownMessage, type HostAPI, type WorkerAPI, type WorkerDefinitionName, type WorkerModule } from "./contracts.ts";
+import { shutdownMessage, type HostAPI, type WorkerAPI, type WorkerDefinitionName } from "./contracts.ts";
+
+type Entry = {
+  workerDefinition: WorkerDefinitionName;
+  main(input: string): Promise<string>;
+};
 
 /** Internal infrastructure. The runtime supplies a trusted, allowlisted loader. */
 export function serveWorker(port: MessagePort, selectedWorker: WorkerDefinitionName,
-  loadModule: () => Promise<WorkerModule>): void {
+  loadModule: () => Promise<Entry>): void {
   const identity = { workerPid: process.pid, workerThreadId: threadId, workerIsMainThread: isMainThread };
   let closed = false;
-  let ready: Promise<WorkerModule>;
+  let ready: Promise<Entry>;
   const rpc = new RpcPeer<HostAPI, WorkerAPI>((message) => port.postMessage(message), {
     async run(input) {
       const entry = await ready;
       if (closed) throw new Error("Worker session SDK is closed");
-      const output = await entry.main(input);
+      const output = JSON.parse(await entry.main(JSON.stringify(input)));
       return { ...output, ...identity, workerDefinition: entry.workerDefinition };
     },
   });

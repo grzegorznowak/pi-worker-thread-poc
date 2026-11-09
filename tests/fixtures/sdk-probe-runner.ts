@@ -15,12 +15,23 @@ if (workerData.shutdownMode === "loader") {
     });
     return {
       workerDefinition: "primary",
-      async main() {
+      async main(_input: string): Promise<string> {
         probePort.postMessage({ event: "main-started" });
         throw new Error("Late main must not execute");
       },
     };
   });
+} else if (workerData.jsonBoundary) {
+  serveWorker(parentPort, "primary", async () => ({
+    workerDefinition: "primary",
+    async main(input: string): Promise<string> {
+      return JSON.stringify({
+        inputType: typeof input,
+        payload: JSON.parse(input),
+        plain: { values: ["text", 42, true, null], nested: { message: "JSON, not a contract wrapper" } },
+      });
+    },
+  }));
 } else {
   serveWorker(parentPort, "primary", () => workerData.shutdownMode
     ? import("./sdk-probe-shutdown-entry.ts") : import("./sdk-probe-entry.ts"));

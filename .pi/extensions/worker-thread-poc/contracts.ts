@@ -30,27 +30,20 @@ export type HostAPI = {
     result: PromptReply;
   };
 };
-export type WorkerInput = {
-  text: string;
-  snapshot: SessionSnapshot;
-  filePaths: FileExchangePaths; // Paths only: the worker must read host.txt itself.
-  mode: "normal" | "fail" | "timeout" | "crash" | "prompt";
-};
-export type WorkerOutput = {
-  snapshot: SessionSnapshot;
-  receipt: HostReceipt;
-  output: string;
-  fileExchange: FileExchangeReceipt;
-  promptReply?: PromptReply;
-};
-export type WorkerModule = {
-  workerDefinition: WorkerDefinitionName;
-  main(input: WorkerInput): Promise<WorkerOutput>;
-};
 export type WorkerAPI = {
   run: {
-    params: WorkerInput;
-    result: WorkerOutput & {
+    params: {
+      text: string;
+      snapshot: SessionSnapshot;
+      filePaths: FileExchangePaths; // Paths only: the worker must read host.txt itself.
+      mode: "normal" | "fail" | "timeout" | "crash" | "prompt";
+    };
+    result: {
+      snapshot: SessionSnapshot;
+      receipt: HostReceipt;
+      output: string;
+      fileExchange: FileExchangeReceipt;
+      promptReply?: PromptReply;
       workerDefinition: WorkerDefinitionName;
       workerPid: number;
       workerThreadId: number;

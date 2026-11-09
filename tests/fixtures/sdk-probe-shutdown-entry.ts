@@ -1,5 +1,4 @@
 import { workerData, type MessagePort } from "node:worker_threads";
-import type { WorkerOutput } from "../../.pi/extensions/worker-thread-poc/contracts.ts";
 import { session } from "../../.pi/extensions/worker-thread-poc/sdk/session.ts";
 
 const probePort = workerData.probePort as MessagePort;
@@ -19,7 +18,7 @@ async function pendingRequest(request: Promise<unknown>): Promise<never> {
 
 if (workerData.shutdownMode === "import") await pendingRequest(session.sessionInfo());
 export const workerDefinition = "primary";
-export async function main(): Promise<WorkerOutput> {
+export async function main(_input: string): Promise<string> {
   probePort.postMessage({ event: "main-started" });
   return pendingRequest(session.prompt({ text: "pending shutdown probe" }));
 }
