@@ -128,7 +128,7 @@ sequenceDiagram
 
     User->>Pi: /worker-thread-poc [--worker primary|secondary] hello OR prompt
     Pi->>Ext: Invoke command handler(args, ctx)
-    Ext->>Ext: Validate selection; reject invalid options before any work
+    Ext->>Ext: Validate selection, reject invalid options before any work
     Ext->>Ext: Resolve trusted worker.ts OR worker-secondary.ts URL
     Ext->>Worker: new Worker(selected module URL)
     Worker->>Worker: Entry injects its own definition into startWorker()
@@ -176,7 +176,7 @@ sequenceDiagram
     FS-->>Ext: Worker test text
     Ext->>Ext: Compare both readbacks and receipt paths
     Ext->>Ext: Check definition match, same PID, different threads, both file checks
-    Note over Ext,FS: Retain both files for inspection; no deletion
+    Note over Ext,FS: Retain both files for inspection, no deletion
     Ext->>Worker: Shutdown control message
     Worker->>Worker: Close RPC and parentPort
     Worker-->>Ext: Thread exit event
