@@ -1,5 +1,12 @@
 # Pi worker-thread PoC
 
+> **⚠️ WARNING: This is pure experimentation.** A small proof of concept for exploring how a
+> [Pi](https://github.com/earendil-works/pi) extension can select native TypeScript
+> Node.js worker threads, exchange typed messages and files, and ask the *same
+> running Pi session* to answer a prompt. It is not production infrastructure and
+> is not a security boundary. Workers share the host process and OS permissions.
+> Expect rough edges, missing features, and behavior that may change.
+
 A project-local Pi extension selects one of two native TypeScript Node worker entries at invocation time. The worker calls a small typed host API while the host awaits its result. Both use **the same PID and different thread IDs**. The original `/home/vscode/pi-worker-poc` project is not changed.
 
 ## Run
