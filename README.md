@@ -71,6 +71,72 @@ Pi discovers `index.ts`, not each helper as an extension. Pi uses jiti to load t
 
 The host handles worker `error`, `messageerror`, and `exit`; RPC propagates remote failures and bounds pending calls. Normal requests have a 5 s deadline; the timeout diagnostic uses 750 ms. Prompt deadlines are nested: host prompt 60 s, worker callback 65 s, outer request 70 s. Session shutdown/reload aborts active adapters and awaits worker cleanup. Worker stdout is captured and discarded, so `console.log()` cannot corrupt Pi's RPC JSONL; worker stderr remains on stderr.
 
+## Execution sequence
+
+This diagram covers startup, command execution, the optional model call, and cleanup. The Pi harness and extension run on the same main thread; the worker runs on a separate thread in that process.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Pi as Pi harness / active session
+    participant Ext as Extension (main thread)
+    participant Worker as worker.ts (worker thread)
+    participant Model as Configured model provider
+
+    User->>Pi: Start pi --approve
+    Pi->>Pi: Discover trusted project extensions
+    Pi->>Ext: Load index.ts via jiti
+    Ext->>Pi: Register /worker-thread-poc
+    Note over Ext: No worker started yet
+
+    User->>Pi: /worker-thread-poc hello OR prompt
+    Pi->>Ext: Invoke command handler(args, ctx)
+    Ext->>Worker: new Worker(worker.ts)
+    Note over Ext,Worker: Same PID, different thread IDs and V8 isolates<br/>Native TypeScript stripping in worker
+
+    Ext->>Worker: RPC run(text, mode, session snapshot)
+    Note over Ext,Worker: Typed messages via postMessage / structured clone<br/>Host awaits run(), but still handles callbacks
+
+    Worker->>Ext: RPC sessionInfo(worker identity)
+    Ext->>Pi: Read live session ID and cwd
+    Pi-->>Ext: Session data
+    Ext->>Pi: Notify WORKER_THREAD_POC_PROGRESS
+    Ext-->>Worker: Session data, host identity, random token
+
+    alt hello mode (also the default)
+        Worker->>Worker: Uppercase text and include callback token
+    else prompt mode
+        Worker->>Ext: RPC prompt("hello world")
+        Ext->>Ext: Check idle session and active model
+        Ext->>Pi: Subscribe to lifecycle events
+        Ext->>Ext: Resolve authentication and recheck session state
+        Ext->>Pi: sendUserMessage("hello world")
+        Note over Pi,Ext: Uses the existing session, history, and tools<br/>sendUserMessage returns void
+
+        Pi-->>Ext: agent_start
+        Pi->>Model: Run agent with current conversation
+        Model-->>Pi: Assistant response
+        Pi-->>Ext: agent_end(messages)
+        Ext->>Ext: Capture latest assistant text
+        Note over Pi,Ext: Retries or continuations may repeat these events
+        Pi-->>Ext: agent_settled
+        Ext->>Ext: Remove subscriptions and deadline timer
+        Ext-->>Worker: Prompt reply with text and session ID
+    end
+
+    Worker-->>Ext: RPC run result
+    Ext->>Ext: Check same PID and different thread IDs
+    Ext->>Worker: Shutdown control message
+    Worker->>Worker: Close RPC and parentPort
+    Worker-->>Ext: Thread exit event
+    Note over Ext,Worker: Fallback: terminate() after 750 ms if needed
+
+    Ext->>Pi: Notify WORKER_THREAD_POC_RESULT
+    Pi-->>User: Display result
+```
+
+Errors, crashes, and deadlines produce `ok: false` and follow the cleanup path.
+
 ## Limits
 
 - **Not a security sandbox.** The worker has the same OS permissions and inherits an environment copy. It can access files, network, and Node APIs. Do not run untrusted code here.
