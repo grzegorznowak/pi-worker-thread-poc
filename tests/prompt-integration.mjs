@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  startPi, project, extension, provider, progressPrefix, resultPrefix, reportOf, assertIdentity,
+  startPi, project, extension, provider, progressPrefix, resultPrefix, reportOf, assertIdentity, assertFileExchange, assertSelection,
 } from "./pi-client.mjs";
 
 const expectedText = "Hello world from the running Pi session!";
@@ -26,12 +26,19 @@ try {
   assert.deepEqual(initial.messages.filter((message) => ["user", "assistant"].includes(message.role)), []);
   await pi.request("set_auto_retry", { enabled: false });
 
-  const response = await pi.request("prompt", { message: "/worker-thread-poc prompt" });
+  for (const [index, selectedWorker] of ["primary", "secondary"].entries()) {
+  const start = pi.records.length;
+  const args = selectedWorker === "primary" ? "prompt" : "--worker secondary prompt";
+  const response = await pi.request("prompt", { message: `/worker-thread-poc ${args}` });
   assert.equal(response.disposition, "handled", "slash handler awaits Worker and same-session reply");
-  const progress = reportOf(pi.records, progressPrefix);
-  const report = reportOf(pi.records, resultPrefix);
+  const records = pi.records.slice(start);
+  const progress = reportOf(records, progressPrefix);
+  const report = reportOf(records, resultPrefix);
+  assertSelection(report, progress, selectedWorker);
   assert.equal(report.ok, true, JSON.stringify(report));
   assert.equal(report.error, undefined);
+  await assertFileExchange(report);
+  console.log(`PROMPT_FILE_EXCHANGE ${JSON.stringify({ selectedWorker, sessionId: before.sessionId, ...report.fileExchange })}`);
   assertIdentity(report, progress, pi.child.pid);
   assert.equal(progress.sessionId, before.sessionId);
   assert.equal(report.result.workerPid, pi.child.pid);
@@ -58,28 +65,30 @@ try {
   const { messages } = await pi.request("get_messages");
   const users = messages.filter((message) => message.role === "user");
   const assistants = messages.filter((message) => message.role === "assistant");
-  assert.equal(users.length, 1, "only the injected user prompt belongs in the conversation");
+  assert.equal(users.length, index + 1, "only the injected user prompts belong in the conversation");
   assert.equal(textOf(users[0]), "hello world");
-  assert.equal(assistants.length, 1);
+  assert.equal(assistants.length, index + 1);
   assert.equal(textOf(assistants[0]), expectedText);
   assert.equal(assistants[0].provider, provider);
   assert.equal(assistants[0].model, "hello");
   assert.equal(assistants[0].stopReason, "stop");
   const { entries } = await pi.request("get_entries");
   const transcript = entries.filter((entry) => entry.type === "message").map((entry) => entry.message);
-  assert.deepEqual(transcript.filter((message) => message.role === "user").map(textOf), ["hello world"]);
-  assert.deepEqual(transcript.filter((message) => message.role === "assistant").map(textOf), [expectedText]);
+  assert.deepEqual(transcript.filter((message) => message.role === "user").map(textOf), Array(index + 1).fill("hello world"));
+  assert.deepEqual(transcript.filter((message) => message.role === "assistant").map(textOf), Array(index + 1).fill(expectedText));
 
-  assert.equal(pi.records.filter((record) => record.type === "agent_start").length, 1, "one actual Pi agent run");
-  assert.equal(pi.records.filter((record) => record.type === "agent_end").length, 1);
-  const settled = pi.records.filter((record) => record.type === "agent_settled");
+  assert.equal(records.filter((record) => record.type === "agent_start").length, 1, "one actual Pi agent run per worker invocation");
+  assert.equal(records.filter((record) => record.type === "agent_end").length, 1);
+  const settled = records.filter((record) => record.type === "agent_settled");
   assert.equal(settled.length, 1, "one settled run, not merely an agent_end");
   assert.equal(settled[0].aborted, false);
   assert.deepEqual(pi.records.filter((record) => record.type === "extension_error"), []);
+  console.log(`PASS ${selectedWorker}: same-session prompt session=${before.sessionId}, PID=${pi.child.pid}, thread=${report.workerThreadId}`);
+  }
 } catch (error) {
   console.error("Pi diagnostics:", JSON.stringify(pi.diagnostics(), null, 2));
   throw error;
 } finally {
   await pi.stop();
 }
-console.log("PASS same-session hello world: local fixture provider, shared PID, distinct threads, transcript and two-way callback");
+console.log("PASS both entries' same-session hello world: local fixture provider, shared PID, distinct threads, transcript and two-way callback");

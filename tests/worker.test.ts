@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile, stat, writeFile } from "node:fs/promises";
+import { createFileExchange, verifyFileExchange } from "../.pi/extensions/worker-thread-poc/file-exchange.ts";
 import { test, type TestContext } from "node:test";
 import { Worker, threadId } from "node:worker_threads";
 import { shutdownMessage, type HostAPI, type HostReceipt, type PromptReply, type WorkerAPI } from "../.pi/extensions/worker-thread-poc/contracts.ts";
 import { RpcPeer } from "../.pi/extensions/worker-thread-poc/rpc.ts";
+import { workerModuleUrl } from "../.pi/extensions/worker-thread-poc/worker-selection.ts";
 
 const options = { timeout: 4_000 };
 const workerUrl = new URL("../.pi/extensions/worker-thread-poc/worker.ts", import.meta.url);
@@ -13,7 +16,10 @@ const promptReply: PromptReply = {
 };
 
 function start(t: TestContext, entry = workerUrl) {
-  const worker = new Worker(entry, { execArgv: ["--experimental-strip-types"], stdout: true, stderr: true });
+  // Deliberately lie in host-side data. Identity must come from the loaded entry.
+  const claimedName = entry.href === workerModuleUrl("secondary").href ? "primary" : "secondary";
+  const worker = new Worker(entry, { execArgv: ["--experimental-strip-types"], stdout: true, stderr: true,
+    workerData: { selectedWorker: claimedName, workerDefinition: claimedName } });
   const workerThreadId = worker.threadId;
   // Drain captured output without letting Worker output corrupt the test runner protocol.
   worker.stdout.resume();
@@ -62,20 +68,75 @@ function start(t: TestContext, entry = workerUrl) {
     assert.equal(worker.threadId, -1, "exit/terminate, not a PID probe, proves Worker cleanup");
   })();
   t.after(stop);
-  const run = (mode: WorkerAPI["run"]["params"]["mode"] = "normal", text = "hello", timeout = 1_000) =>
-    rpc.call("run", { mode, text, snapshot }, timeout);
+  const run = async (mode: WorkerAPI["run"]["params"]["mode"] = "normal", text = "hello", timeout = 1_000,
+    filePaths?: WorkerAPI["run"]["params"]["filePaths"]) => {
+    const paths = filePaths ?? await createFileExchange();
+    // Deliberately strip hostWrittenText: only paths cross the Worker boundary.
+    return rpc.call("run", { mode, text, snapshot,
+      filePaths: { hostPath: paths.hostPath, workerPath: paths.workerPath } }, timeout);
+  };
   return { worker, workerThreadId, rpc, run, receipt, callbacks, prompts, errors, exited, stop };
 }
 
 async function assertNormal(instance: ReturnType<typeof start>, text = "hello") {
   const result = await instance.run("normal", text);
+  assert.equal(result.workerDefinition, "primary");
   assert.equal(result.workerPid, process.pid);
   assert.equal(result.workerThreadId, instance.workerThreadId);
   assert.equal(result.workerIsMainThread, false);
   assert.deepEqual(result.receipt, instance.receipt, "Worker returns exact asynchronous host callback reply");
   assert.deepEqual(result.snapshot, snapshot);
   assert.equal(result.output, `${text.toUpperCase()} (host callback token: ${instance.receipt.token})`);
+  assert.equal(result.fileExchange.workerReadHostText, await readFile(result.fileExchange.hostPath, "utf8"));
+  assert.equal(result.fileExchange.workerWrittenText, await readFile(result.fileExchange.workerPath, "utf8"));
   return result;
+}
+
+// Run the new entry-selection checks before the existing lifecycle regression tests.
+for (const name of ["primary", "secondary"] as const) {
+  test(`${name} entry owns identity and output despite contradictory host labels; two-way fs works`, options, async (t) => {
+    const instance = start(t, workerModuleUrl(name));
+    const prepared = await createFileExchange();
+    const result = await instance.run("normal", "hello", 1_000, prepared);
+    assert.equal(result.workerDefinition, name);
+    assert.notEqual(result.workerDefinition, name === "primary" ? "secondary" : "primary");
+    assert.equal(instance.callbacks[0].workerDefinition, name);
+    const transformed = name === "primary" ? "HELLO" : "OLLEH";
+    assert.equal(result.output, `${transformed} (host callback token: ${instance.receipt.token})`);
+    assert.deepEqual(result.receipt, instance.receipt);
+    assert.deepEqual(result.snapshot, snapshot);
+    const files = await verifyFileExchange(prepared, result.fileExchange);
+    assert.equal(files.workerReadHostFile, true);
+    assert.equal(files.hostReadWorkerFile, true);
+    await instance.stop();
+    assert.equal(await instance.exited, 0);
+  });
+
+  test(`${name} entry preserves literal same-session prompt RPC and bidirectional files`, options, async (t) => {
+    const instance = start(t, workerModuleUrl(name));
+    const prepared = await createFileExchange();
+    const result = await instance.run("prompt", "prompt", 1_000, prepared);
+    assert.equal(result.workerDefinition, name);
+    assert.deepEqual(instance.prompts, ["hello world"]);
+    assert.deepEqual(result.promptReply, promptReply);
+    assert.equal(result.output, promptReply.text, "never transform assistant output");
+    const files = await verifyFileExchange(prepared, result.fileExchange);
+    assert.equal(files.workerReadHostFile, true);
+    assert.equal(files.hostReadWorkerFile, true);
+  });
+
+  test(`${name} entry preserves fail, timeout, crash and recovery semantics`, options, async (t) => {
+    const instance = start(t, workerModuleUrl(name));
+    await assert.rejects(instance.run("fail"), /Intentional worker failure/);
+    assert.equal((await instance.run()).workerDefinition, name);
+    await assert.rejects(instance.run("timeout", "timeout", 50), /RPC timeout: run after 50ms/);
+    assert.equal((await instance.run()).workerDefinition, name, "a deadline does not block later requests");
+    await assert.rejects(instance.run("crash"), /Worker exited \(code=7\)/);
+    assert.equal(await instance.exited, 7);
+    assert.equal(instance.callbacks.every((callback) => callback.workerDefinition === name), true);
+    const replacement = start(t, workerModuleUrl(name));
+    assert.equal((await replacement.run()).workerDefinition, name);
+  });
 }
 
 test("real TypeScript Worker shares PID, has its own thread ID, and awaits host callback", options, async (t) => {
@@ -94,11 +155,48 @@ test("real Worker requests literal hello world and receives host prompt reply da
   const instance = start(t);
   const result = await instance.run("prompt", "prompt");
   assert.deepEqual(instance.prompts, ["hello world"]);
+  assert.equal(result.fileExchange.workerReadHostText, await readFile(result.fileExchange.hostPath, "utf8"));
+  assert.equal(result.fileExchange.workerWrittenText, await readFile(result.fileExchange.workerPath, "utf8"));
   assert.deepEqual(result.promptReply, promptReply);
   assert.equal(result.output, promptReply.text);
   assert.deepEqual(result.receipt, instance.receipt);
   assert.equal(result.workerPid, process.pid);
   assert.equal(result.workerThreadId, instance.workerThreadId);
+});
+
+test("real Worker file exchange uses fresh private files and paths-only RPC", options, async (t) => {
+  const instance = start(t);
+  const prepared = await createFileExchange();
+  const result = await instance.run("normal", "not copied to disk", 1_000, prepared);
+  const proof = await verifyFileExchange(prepared, result.fileExchange);
+  assert.equal(proof.workerReadHostFile, true);
+  assert.equal(proof.hostReadWorkerFile, true);
+  assert.equal(proof.fileExchange.workerReadHostText, prepared.hostWrittenText);
+  assert.match(proof.fileExchange.hostWrittenText, /^pi-worker-thread-poc host test [\da-f-]+\n$/);
+  assert.match(proof.fileExchange.workerWrittenText, /^pi-worker-thread-poc worker test [\da-f-]+\n$/);
+  assert.notEqual(proof.fileExchange.hostWrittenText, proof.fileExchange.workerWrittenText);
+  assert.equal((await stat(prepared.hostPath)).mode & 0o777, 0o600);
+  assert.equal((await stat(prepared.workerPath)).mode & 0o777, 0o600);
+  assert.equal((await stat(new URL(".", `file://${prepared.hostPath}`))).mode & 0o777, 0o700);
+});
+
+test("missing host file rejects real Worker RPC, then recovery succeeds", options, async (t) => {
+  const instance = start(t);
+  const prepared = await createFileExchange();
+  await assert.rejects(instance.run("normal", "hello", 1_000,
+    { ...prepared, hostPath: `${prepared.hostPath}.missing` }), /ENOENT/);
+  await assertNormal(instance, "recovered after read error");
+  await instance.stop();
+  assert.equal(await instance.exited, 0);
+});
+
+test("real Worker refuses to clobber an existing file, then recovery succeeds", options, async (t) => {
+  const instance = start(t);
+  const prepared = await createFileExchange();
+  await writeFile(prepared.workerPath, "preexisting test text\n", { flag: "wx", mode: 0o600 });
+  await assert.rejects(instance.run("normal", "hello", 1_000, prepared), /EEXIST/);
+  assert.equal(await readFile(prepared.workerPath, "utf8"), "preexisting test text\n");
+  await assertNormal(instance, "recovered after write error");
 });
 
 test("remote failure does not kill a real Worker and permits another call", options, async (t) => {

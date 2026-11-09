@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -146,6 +146,39 @@ export function reportOf(records, prefix) {
     record.method === "notify" && record.message.startsWith(prefix));
   assert.equal(matches.length, 1, `expected one ${prefix}notification`);
   return JSON.parse(matches[0].message.slice(prefix.length));
+}
+
+export function assertSelection(report, progress, expected) {
+  assert.equal(report.selectedWorker, expected);
+  assert.equal(report.workerDefinition, expected, "actual entry identity, not just the host selection");
+  assert.equal(report.workerDefinitionMatches, true);
+  const filename = expected === "primary" ? "worker.ts" : "worker-secondary.ts";
+  assert.equal(report.workerModuleUrl, new URL(`../.pi/extensions/worker-thread-poc/${filename}`, import.meta.url).href);
+  assert.equal(progress.selectedWorker, expected);
+  assert.equal(progress.workerDefinition, expected);
+  assert.equal(progress.workerModuleUrl, report.workerModuleUrl);
+  if (report.result) assert.equal(report.result.workerDefinition, expected);
+}
+
+export async function assertFileExchange(report) {
+  assert.equal(report.workerReadHostFile, true, "worker actually read host.txt");
+  assert.equal(report.hostReadWorkerFile, true, "plugin actually read worker.txt");
+  const files = report.fileExchange;
+  assert.match(files.hostPath, /^\/tmp\/pi-worker-thread-poc-[^/]+\/host\.txt$/);
+  assert.equal(files.workerPath, files.hostPath.replace(/host\.txt$/, "worker.txt"));
+  assert.match(files.hostWrittenText, /^pi-worker-thread-poc host test [\da-f-]+\n$/);
+  assert.match(files.workerWrittenText, /^pi-worker-thread-poc worker test [\da-f-]+\n$/);
+  assert.equal(files.workerReadHostText, files.hostWrittenText);
+  assert.equal(files.hostReadWorkerText, files.workerWrittenText);
+  assert.equal(await readFile(files.hostPath, "utf8"), files.hostWrittenText);
+  assert.equal(await readFile(files.workerPath, "utf8"), files.workerWrittenText);
+  assert.equal((await stat(files.hostPath)).mode & 0o777, 0o600);
+  assert.equal((await stat(files.workerPath)).mode & 0o777, 0o600);
+  assert.equal((await stat(new URL(".", `file://${files.hostPath}`))).mode & 0o777, 0o700);
+  assert.deepEqual(report.result.fileExchange, {
+    hostPath: files.hostPath, workerPath: files.workerPath,
+    workerReadHostText: files.workerReadHostText, workerWrittenText: files.workerWrittenText,
+  });
 }
 
 export function assertIdentity(report, progress, piPid) {
