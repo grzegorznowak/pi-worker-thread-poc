@@ -2,17 +2,17 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { MessageChannel, Worker, threadId } from "node:worker_threads";
 import { randomUUID } from "node:crypto";
-import { session } from "../.pi/extensions/worker-thread-poc/sdk/session.ts";
+import { session } from "../.pi/extensions/worker-thread-poc/api/session.ts";
 import { bindSession, closeSession } from "../.pi/extensions/worker-thread-poc/session-binding.ts";
 import { RpcPeer, type Message } from "../.pi/extensions/worker-thread-poc/rpc.ts";
 import { shutdownMessage, type HostAPI, type HostReceipt, type WorkerAPI } from "../.pi/extensions/worker-thread-poc/contracts.ts";
 
 const options = { timeout: 4000 };
-const snapshot = { cwd: process.cwd(), sessionId: "sdk-test" };
+const snapshot = { cwd: process.cwd(), sessionId: "api-test" };
 
 function probe(t: TestContext, workerData: Record<string, unknown> = {}, production = false) {
   const worker = new Worker(new URL(production
-    ? "../.pi/extensions/worker-thread-poc/worker-runtime.ts" : "./fixtures/sdk-probe-runner.ts", import.meta.url), {
+    ? "../.pi/extensions/worker-thread-poc/worker-runtime.ts" : "./fixtures/api-probe-runner.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"], stdout: true, stderr: true, workerData,
   });
   worker.stdout.resume();
@@ -66,7 +66,7 @@ function shutdownProbe(t: TestContext, shutdownMode: "import" | "main" | "loader
     waiters.get(message.event)?.();
   });
   const observerClosed = new Promise<void>((resolve) => port1.once("close", resolve));
-  const worker = new Worker(new URL("./fixtures/sdk-probe-runner.ts", import.meta.url), {
+  const worker = new Worker(new URL("./fixtures/api-probe-runner.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"], stdout: true, stderr: true,
     workerData: { shutdownMode, probePort: port2 }, transferList: [port2],
   });
@@ -82,7 +82,7 @@ function shutdownProbe(t: TestContext, shutdownMode: "import" | "main" | "loader
   let pendingReached!: () => void;
   const pending = new Promise<void>((resolve) => { pendingReached = resolve; });
   worker.on("message", (message: Message) => {
-    // Withhold the reply only after the worker actually requests the selected SDK method.
+    // Withhold the reply only after the worker actually requests the selected API method.
     if (message.kind === "request" && message.method === (shutdownMode === "import" ? "sessionInfo" : "prompt")) {
       pendingReached();
     } else rpc.receive(message);
@@ -102,7 +102,7 @@ function shutdownProbe(t: TestContext, shutdownMode: "import" | "main" | "loader
 }
 
 for (const mode of ["import", "main"] as const) {
-  test(`shutdown rejects a pending ${mode}-time SDK request without a Worker error`, options, async (t) => {
+  test(`shutdown rejects a pending ${mode}-time API request without a Worker error`, options, async (t) => {
     const instance = shutdownProbe(t, mode);
     const rejected = assert.rejects(instance.run(), /Worker exited \(code=0\)/);
     await instance.pending;
@@ -111,9 +111,9 @@ for (const mode of ["import", "main"] as const) {
     await rejected;
     await instance.observerClosed;
     assert.deepEqual(instance.errors, []);
-    assert.equal(instance.events.some(({ event }) => event === "sdk-resolved"), false);
-    assert.equal(instance.events.filter(({ event }) => event === "sdk-rejected").length, 1);
-    assert.match(instance.events.find(({ event }) => event === "sdk-rejected")!.error!, /RPC closed/);
+    assert.equal(instance.events.some(({ event }) => event === "api-resolved"), false);
+    assert.equal(instance.events.filter(({ event }) => event === "api-rejected").length, 1);
+    assert.match(instance.events.find(({ event }) => event === "api-rejected")!.error!, /RPC closed/);
     assert.equal(instance.events.filter(({ event }) => event === "main-started").length, mode === "main" ? 1 : 0);
   });
 }
@@ -191,7 +191,7 @@ test("concurrent Worker bindings and replacement never reuse or crosswire sessio
 
 for (const [data, expected] of [
   [{ mismatch: true }, /does not match trusted selection/],
-  [{ importFailure: true }, /SDK probe import failed/],
+  [{ importFailure: true }, /API probe import failed/],
 ] as const) {
   test(`runner rejects invalid module or import failure ${JSON.stringify(data)}`, options, async (t) => {
     const instance = probe(t, data);
@@ -204,7 +204,7 @@ for (const [data, expected] of [
 
 for (const selectedWorker of [undefined, "missing", "__proto__", "file:///tmp/upload.ts"]) {
   test(`runner rejects untrusted selection ${String(selectedWorker)} before import or RPC`, options, async (t) => {
-    const instance = probe(t, { selectedWorker, workerModuleUrl: "./fixtures/sdk-probe-entry.ts" }, true);
+    const instance = probe(t, { selectedWorker, workerModuleUrl: "./fixtures/api-probe-entry.ts" }, true);
     await assert.rejects(instance.run(), /--worker requires primary or secondary/);
     assert.equal(await instance.exited, 1);
     assert.deepEqual(instance.callbacks, []);
@@ -216,8 +216,8 @@ test("session facade has a typed selected surface, clear lifecycle errors and on
   assert.deepEqual(Object.keys(session).sort(), ["prompt", "sessionInfo"]);
   assert.equal(Object.isFrozen(session), true);
   const { sessionInfo, prompt } = session;
-  await assert.rejects(sessionInfo(), /Worker session SDK is unbound/);
-  await assert.rejects(prompt({ text: "before bind" }), /Worker session SDK is unbound/);
+  await assert.rejects(sessionInfo(), /Worker session API is unbound/);
+  await assert.rejects(prompt({ text: "before bind" }), /Worker session API is unbound/);
   const receipt: HostReceipt = { ...snapshot, hostPid: process.pid, hostThreadId: threadId,
     hostIsMainThread: true, token: "unit-binding" };
   const client = {
@@ -227,15 +227,15 @@ test("session facade has a typed selected surface, clear lifecycle errors and on
     },
   };
   bindSession(client);
-  const again = (await import("../.pi/extensions/worker-thread-poc/sdk/session.ts")).session;
+  const again = (await import("../.pi/extensions/worker-thread-poc/api/session.ts")).session;
   assert.equal(again, session);
   assert.deepEqual(await sessionInfo(), receipt);
   assert.equal((await prompt({ text: "bound" })).text, "bound");
   assert.throws(() => bindSession(client), /cannot bind: bound/);
   closeSession();
   closeSession();
-  await assert.rejects(sessionInfo(), /Worker session SDK is closed/);
-  await assert.rejects(prompt({ text: "after close" }), /Worker session SDK is closed/);
+  await assert.rejects(sessionInfo(), /Worker session API is closed/);
+  await assert.rejects(prompt({ text: "after close" }), /Worker session API is closed/);
   assert.throws(() => bindSession(client), /cannot bind: closed/);
   function checkTypes() {
     const info: Promise<HostReceipt> = session.sessionInfo();

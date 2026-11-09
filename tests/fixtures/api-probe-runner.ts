@@ -34,5 +34,5 @@ if (workerData.shutdownMode === "loader") {
   }));
 } else {
   serveWorker(parentPort, "primary", () => workerData.shutdownMode
-    ? import("./sdk-probe-shutdown-entry.ts") : import("./sdk-probe-entry.ts"));
+    ? import("./api-probe-shutdown-entry.ts") : import("./api-probe-entry.ts"));
 }

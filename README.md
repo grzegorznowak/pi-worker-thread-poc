@@ -7,7 +7,7 @@
 > is not a security boundary. Workers share the host process and OS permissions.
 > Expect rough edges, missing features, and behavior that may change.
 
-A project-local Pi extension selects one of two native TypeScript worker modules at invocation time. A shared runner binds a small typed session SDK before importing the selected module and calling its `main(input)`. The worker uses that SDK while the host awaits its result. Both use **the same PID and different thread IDs**. The original `/home/vscode/pi-worker-poc` project is not changed.
+A project-local Pi extension selects one of two native TypeScript worker modules at invocation time. A shared runner binds a small typed session API before importing the selected module and calling its `main(input)`. The worker uses that API while the host awaits its result. Both use **the same PID and different thread IDs**. The original `/home/vscode/pi-worker-poc` project is not changed.
 
 ## Run
 
@@ -34,7 +34,7 @@ Select a different entry in the **same running Pi session**, without `/reload`:
 /worker-thread-poc --worker primary hello
 ```
 
-The outputs start with `HELLO`, `OLLEH`, and `HELLO`. Each invocation starts the shared `worker-runtime.ts` entry with an allowlisted selection in `workerData`. The runner binds the session SDK, then dynamically imports `worker.ts` for `primary` or `worker-secondary.ts` for `secondary`. These are separate behavior modules, each with its own exported identity, `main(input)`, and text transform. No definition functions cross IPC.
+The outputs start with `HELLO`, `OLLEH`, and `HELLO`. Each invocation starts the shared `worker-runtime.ts` entry with an allowlisted selection in `workerData`. The runner binds the session API, then dynamically imports `worker.ts` for `primary` or `worker-secondary.ts` for `secondary`. These are separate behavior modules, each with its own exported identity, `main(input)`, and text transform. No definition functions cross IPC.
 
 Syntax: `/worker-thread-poc [--worker primary|secondary] [text]`. The optional selection must appear once, before text; the `--worker=value` form is not supported. With no text, either entry runs `hello`. Leading and trailing text whitespace is trimmed; internal spacing is kept. Missing/unsupported selections, repeated selections, and misplaced `--worker` options return an error before any worker, `/tmp` files, or model work starts. Other text remains normal input.
 
@@ -59,12 +59,12 @@ Additional local diagnostic commands:
 
 These demonstrate a remote exception, deadline, and worker-thread exit (code 7). Each also accepts `--worker primary` or `--worker secondary` before the diagnostic text. `process.exit()` in the worker ends only that thread. Other text is uppercased by `primary`, or reversed by Unicode code point then uppercased by `secondary`. Both prompt modes return the assistant text unchanged.
 
-## Worker-facing session SDK
+## Worker-facing session API
 
 Workers import the plugin-owned `session` object. They do not start a worker, create a connection, list RPC methods, or receive Pi's `pi` or `ctx` objects. The actual primary module is:
 
 ```ts
-import { session } from "./sdk/session.ts";
+import { session } from "./api/session.ts";
 import { executeTask } from "./worker-task.ts";
 
 export const workerDefinition = "primary";
@@ -83,7 +83,7 @@ const reply = await session.prompt({ text: "hello world" });
 
 `sessionInfo()` takes no identity arguments. The runner attaches the trusted selection and actual PID/thread identity. Both methods return typed promises; RPC stays inside the infrastructure. Adding a capability requires a facade method, a contract, and a host implementation, not changes to each worker's connection setup.
 
-The runner binds the SDK **before module evaluation**, so imports and helpers can use it before `main()` starts. Imports share one frozen facade and one connection within that Worker isolate. Separate Workers have separate module state, even though they share a PID. Calls before binding or after closure reject with a clear lifecycle error; a closed binding cannot be reused. This is a selected host-capability API, not the full Pi SDK or a new session.
+The runner binds the API **before module evaluation**, so imports and helpers can use it before `main()` starts. Imports share one frozen facade and one connection within that Worker isolate. Separate Workers have separate module state, even though they share a PID. Calls before binding or after closure reject with a clear lifecycle error; a closed binding cannot be reused. This is a selected host-capability API, not the full Pi SDK or a new session.
 
 ## Report
 
@@ -117,9 +117,9 @@ Success requires the actual definition to match the selection, the reported PID 
   worker.ts          primary module exporting main(input) (uppercase)
   worker-secondary.ts secondary module exporting main(input) (reverse-uppercase)
   worker-runtime.ts  native Worker entry, validates the selected built-in module
-  worker-runner.ts   connection setup, SDK binding, dynamic import, and lifecycle
-  session-binding.ts internal one-lifetime, isolate-local SDK binding
-  sdk/session.ts     worker-facing typed session object, no transport setup
+  worker-runner.ts   connection setup, API binding, dynamic import, and lifecycle
+  session-binding.ts internal one-lifetime, isolate-local API binding
+  api/session.ts     worker-facing typed session object, no transport setup
   worker-task.ts     shared demo file exchange, diagnostics, and prompt behavior
   session-prompt.ts  host-side same-session prompt lifecycle adapter
 ```
@@ -131,7 +131,7 @@ Pi discovers `index.ts`, not each helper as an extension. Pi uses jiti to load t
 3. For normal/default and prompt modes, the worker uses Node `readFile(hostPath)` and writes its own fresh test text with `writeFile(workerPath)`. It returns a JSON string with the readback and its written text/path. Fail/timeout/crash diagnostics stop before this step.
 4. In prompt mode it also calls `session.prompt({ text: "hello world" })`. The host observes `agent_start`, captures assistant text at `agent_end`, and resolves at `agent_settled` (which covers retries and continuations).
 5. On return, the runner parses the JSON string into the internal RPC result. The host checks the entry's own `workerDefinition` against its selection and independently uses `readFile(workerPath)`. It compares the worker's host-file readback with its original text, and its own worker-file readback with the worker's receipt. Neither direction can pass on a path mismatch.
-6. The host cancels pending prompt work, sends a shutdown control message, and waits for thread exit, including on file I/O failure. The runner closes the SDK binding, RPC, and port. After 750 ms the host falls back to `worker.terminate()`.
+6. The host cancels pending prompt work, sends a shutdown control message, and waits for thread exit, including on file I/O failure. The runner closes the API binding, RPC, and port. After 750 ms the host falls back to `worker.terminate()`.
 
 The directory has mode `0700`; files use mode `0600` and exclusive creation (`wx`) to avoid overwriting existing files. File contents contain only an identifiable test label and a fresh UUID, never command arguments, model output, session data, or credentials. Files are retained for operator inspection: there is no file deletion or automatic cleanup. Each command/test run can add a directory under `/tmp`, so these files accumulate.
 
@@ -161,7 +161,7 @@ sequenceDiagram
     Ext->>Ext: Validate selection, reject invalid options before any work
     Ext->>Ext: Resolve trusted worker.ts OR worker-secondary.ts URL
     Ext->>Worker: new Worker(shared runtime URL, selectedWorker)
-    Worker->>Worker: Create connection and bind session SDK
+    Worker->>Worker: Create connection and bind session API
     Worker->>Worker: Dynamically import selected module, verify exported identity
     Note over Ext,Worker: Same PID, different thread IDs and V8 isolates<br/>Native TypeScript stripping in worker
 
@@ -243,7 +243,7 @@ npm run test:pi
 npm run test:prompt
 ```
 
-Real Worker tests use the shared runner to load both native TS modules, verify their distinct output and exported identity despite contradictory extra `workerData` labels, and check the typed callback, two-way files, prompt, failure, timeout, crash, and recovery. SDK tests cover the plain JSON string input/output boundary, binding before import and `main()`, shared helper imports, concurrent and replacement Worker isolation, unbound/closed errors, rejected rebinding, load failures, shutdown during pending import/main calls, and prevention of late `main()` execution after shutdown. Strict compiler checks cover the facade and selected-method client types. Parser tests cover valid forms, preserved text, default text, and invalid options. Existing tests still cover missing input files, refusal to overwrite existing output, and recovery after I/O errors. Host-verifier tests cover false readbacks, false written-text receipts, substituted paths, and missing output. CLI tests switch default → secondary → explicit primary in one running Pi process/session without reload, verify each module URL/definition, and prove invalid-selection recovery without creating files or starting model work. Both definitions run the fixture prompt in one session. Tests independently read retained files, check permissions, and print representative evidence.
+Real Worker tests use the shared runner to load both native TS modules, verify their distinct output and exported identity despite contradictory extra `workerData` labels, and check the typed callback, two-way files, prompt, failure, timeout, crash, and recovery. API tests cover the plain JSON string input/output boundary, binding before import and `main()`, shared helper imports, concurrent and replacement Worker isolation, unbound/closed errors, rejected rebinding, load failures, shutdown during pending import/main calls, and prevention of late `main()` execution after shutdown. Strict compiler checks cover the facade and selected-method client types. Parser tests cover valid forms, preserved text, default text, and invalid options. Existing tests still cover missing input files, refusal to overwrite existing output, and recovery after I/O errors. Host-verifier tests cover false readbacks, false written-text receipts, substituted paths, and missing output. CLI tests switch default → secondary → explicit primary in one running Pi process/session without reload, verify each module URL/definition, and prove invalid-selection recovery without creating files or starting model work. Both definitions run the fixture prompt in one session. Tests independently read retained files, check permissions, and print representative evidence.
 
 The CLI integration suite also starts a fresh Pi process with `NODE_OPTIONS=--no-experimental-strip-types` and verifies that the actual extension still completes a native Worker call. The test sets only that child's environment; it does not change the test runner's global environment.
 

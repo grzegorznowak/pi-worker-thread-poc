@@ -1,15 +1,15 @@
 import { workerData, type MessagePort } from "node:worker_threads";
-import { session } from "../../.pi/extensions/worker-thread-poc/sdk/session.ts";
+import { session } from "../../.pi/extensions/worker-thread-poc/api/session.ts";
 
 const probePort = workerData.probePort as MessagePort;
 
 async function pendingRequest(request: Promise<unknown>): Promise<never> {
   try {
     await request;
-    probePort.postMessage({ event: "sdk-resolved" });
-    throw new Error("Pending SDK request must reject on shutdown");
+    probePort.postMessage({ event: "api-resolved" });
+    throw new Error("Pending API request must reject on shutdown");
   } catch (error) {
-    probePort.postMessage({ event: "sdk-rejected", error: String(error) });
+    probePort.postMessage({ event: "api-rejected", error: String(error) });
     throw error;
   } finally {
     probePort.close();

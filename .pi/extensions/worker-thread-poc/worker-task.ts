@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { session } from "./sdk/session.ts";
+import { session } from "./api/session.ts";
 
 // Common demo behavior. No transport or connection setup belongs in worker code.
 export async function executeTask(input: string,

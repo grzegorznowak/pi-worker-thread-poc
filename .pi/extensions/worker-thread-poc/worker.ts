@@ -1,4 +1,4 @@
-import { session } from "./sdk/session.ts";
+import { session } from "./api/session.ts";
 import { executeTask } from "./worker-task.ts";
 
 // Identity and behavior belong to this trusted module, not a host-supplied label.

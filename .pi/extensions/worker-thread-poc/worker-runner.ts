@@ -17,7 +17,7 @@ export function serveWorker(port: MessagePort, selectedWorker: WorkerDefinitionN
   const rpc = new RpcPeer<HostAPI, WorkerAPI>((message) => port.postMessage(message), {
     async run(input) {
       const entry = await ready;
-      if (closed) throw new Error("Worker session SDK is closed");
+      if (closed) throw new Error("Worker session API is closed");
       const output = JSON.parse(await entry.main(JSON.stringify(input)));
       return { ...output, ...identity, workerDefinition: entry.workerDefinition };
     },
@@ -59,7 +59,7 @@ export function serveWorker(port: MessagePort, selectedWorker: WorkerDefinitionN
   });
   // Startup errors must reach the host's Worker error/exit listeners, even before run().
   void ready.catch((error: unknown) => {
-    if (closed) return; // Intentional shutdown can reject an import-time SDK call.
+    if (closed) return; // Intentional shutdown can reject an import-time API call.
     shutdown(error instanceof Error ? error : new Error(String(error)));
     setImmediate(() => { throw error; });
   });

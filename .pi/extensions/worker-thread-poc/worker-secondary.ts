@@ -1,4 +1,4 @@
-import { session } from "./sdk/session.ts";
+import { session } from "./api/session.ts";
 import { executeTask } from "./worker-task.ts";
 
 export const workerDefinition = "secondary";
