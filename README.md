@@ -7,7 +7,7 @@
 > is not a security boundary. Workers share the host process and OS permissions.
 > Expect rough edges, missing features, and behavior that may change.
 
-A project-local Pi extension selects one of two native TypeScript Node worker entries at invocation time. The worker calls a small typed host API while the host awaits its result. Both use **the same PID and different thread IDs**. The original `/home/vscode/pi-worker-poc` project is not changed.
+A project-local Pi extension selects one of two native TypeScript worker modules at invocation time. A shared runner binds a small typed session SDK before importing the selected module and calling its `main(input)`. The worker uses that SDK while the host awaits its result. Both use **the same PID and different thread IDs**. The original `/home/vscode/pi-worker-poc` project is not changed.
 
 ## Run
 
@@ -34,7 +34,7 @@ Select a different entry in the **same running Pi session**, without `/reload`:
 /worker-thread-poc --worker primary hello
 ```
 
-The outputs start with `HELLO`, `OLLEH`, and `HELLO`. The host resolves a trusted built-in module URL on each invocation and passes that URL to `new Worker()`: `worker.ts` for `primary`, `worker-secondary.ts` for `secondary`. This is not one worker with a behavior flag. Each entry defines its own identity and text transform inside its worker isolate, then calls the shared runtime. No definition functions cross IPC.
+The outputs start with `HELLO`, `OLLEH`, and `HELLO`. Each invocation starts the shared `worker-runtime.ts` entry with an allowlisted selection in `workerData`. The runner binds the session SDK, then dynamically imports `worker.ts` for `primary` or `worker-secondary.ts` for `secondary`. These are separate behavior modules, each with its own exported identity, `main(input)`, and text transform. No definition functions cross IPC.
 
 Syntax: `/worker-thread-poc [--worker primary|secondary] [text]`. The optional selection must appear once, before text; the `--worker=value` form is not supported. With no text, either entry runs `hello`. Leading and trailing text whitespace is trimmed; internal spacing is kept. Missing/unsupported selections, repeated selections, and misplaced `--worker` options return an error before any worker, `/tmp` files, or model work starts. Other text remains normal input.
 
@@ -59,12 +59,37 @@ Additional local diagnostic commands:
 
 These demonstrate a remote exception, deadline, and worker-thread exit (code 7). Each also accepts `--worker primary` or `--worker secondary` before the diagnostic text. `process.exit()` in the worker ends only that thread. Other text is uppercased by `primary`, or reversed by Unicode code point then uppercased by `secondary`. Both prompt modes return the assistant text unchanged.
 
+## Worker-facing session SDK
+
+Workers import the plugin-owned `session` object. They do not start a worker, create a connection, list RPC methods, or receive Pi's `pi` or `ctx` objects. The actual primary module is:
+
+```ts
+import type { WorkerInput } from "./contracts.ts";
+import { session } from "./sdk/session.ts";
+import { executeTask } from "./worker-task.ts";
+
+export const workerDefinition = "primary";
+export async function main(input: WorkerInput) {
+  return executeTask(input, await session.sessionInfo(), (text) => text.toUpperCase());
+}
+```
+
+`executeTask()` holds the shared demo file checks, diagnostics, and prompt behavior. In prompt mode, it uses the same facade:
+
+```ts
+const reply = await session.prompt({ text: "hello world" });
+```
+
+`sessionInfo()` takes no identity arguments. The runner attaches the trusted selection and actual PID/thread identity. Both methods return typed promises; RPC stays inside the infrastructure. Adding a capability requires a facade method, a contract, and a host implementation, not changes to each worker's connection setup.
+
+The runner binds the SDK **before module evaluation**, so imports and helpers can use it before `main()` starts. Imports share one frozen facade and one connection within that Worker isolate. Separate Workers have separate module state, even though they share a PID. Calls before binding or after closure reject with a clear lifecycle error; a closed binding cannot be reused. This is a selected host-capability API, not the full Pi SDK or a new session.
+
 ## Report
 
 Interactive Pi and CLI RPC mode receive notifications prefixed with `WORKER_THREAD_POC_PROGRESS` and `WORKER_THREAD_POC_RESULT`, followed by JSON. The result contains:
 
-- `selectedWorker`: the host's parsed selection; `workerModuleUrl`: the exact module URL passed to `new Worker()`.
-- `workerDefinition`: the actual loaded entry's own name, also returned in `result.workerDefinition` and the progress callback. It is not copied from host selection or `workerData`.
+- `selectedWorker`: the host's parsed selection; `workerModuleUrl`: the selected behavior module URL, not the shared runner URL passed to `new Worker()`.
+- `workerDefinition`: the loaded module's exported name, checked by the runner against the selection and returned in `result.workerDefinition`. The progress callback carries the runner-attached trusted selection and actual thread identity.
 - `workerDefinitionMatches`: the returned definition equals the selected name. This must be `true` for `ok`.
 - `ok`, `hostPid`, `workerPid`, `hostThreadId`, `workerThreadId`.
 - `hostIsMainThread`, `workerIsMainThread`, `samePid`, `differentThread` on success.
@@ -86,22 +111,26 @@ Success requires the actual definition to match the selection, the reported PID 
   index.ts           project-local extension and worker lifecycle
   contracts.ts       explicit data-only host/worker API contracts
   file-exchange.ts   private test-file creation and independent host verification
-  rpc.ts             symmetric typed request/response peer
+  rpc.ts             internal symmetric transport and typed method-client helper
   worker-selection.ts small argument parser and trusted module mapping
-  worker.ts          primary native TypeScript entry (uppercase)
-  worker-secondary.ts secondary native TypeScript entry (reverse-uppercase)
-  worker-runtime.ts  shared worker lifecycle, RPC, file exchange, and prompt flow
-  session-prompt.ts  same-session prompt lifecycle adapter
+  worker.ts          primary module exporting main(input) (uppercase)
+  worker-secondary.ts secondary module exporting main(input) (reverse-uppercase)
+  worker-runtime.ts  native Worker entry, validates the selected built-in module
+  worker-runner.ts   connection setup, SDK binding, dynamic import, and lifecycle
+  session-binding.ts internal one-lifetime, isolate-local SDK binding
+  sdk/session.ts     worker-facing typed session object, no transport setup
+  worker-task.ts     shared demo file exchange, diagnostics, and prompt behavior
+  session-prompt.ts  host-side same-session prompt lifecycle adapter
 ```
 
-Pi discovers `index.ts`, not each helper as an extension. Pi uses jiti to load the extension; Node runs the selected `worker.ts` or `worker-secondary.ts` entry and its imports through native TypeScript stripping. `execArgv: ["--experimental-strip-types"]` replaces host command-line flags and explicitly enables stripping, even when `NODE_OPTIONS=--no-experimental-strip-types` is inherited. An empty `execArgv` alone does not override `NODE_OPTIONS`. This worker flag is supported in Node 22.19.0 and Node 24.14.0. The root ESM package and erasable TypeScript syntax work without an external loader. This PoC is for Node, not Bun.
+Pi discovers `index.ts`, not each helper as an extension. Pi uses jiti to load the extension; Node runs `worker-runtime.ts`, the selected behavior module, and their imports through native TypeScript stripping. `execArgv: ["--experimental-strip-types"]` replaces host command-line flags and explicitly enables stripping, even when `NODE_OPTIONS=--no-experimental-strip-types` is inherited. An empty `execArgv` alone does not override `NODE_OPTIONS`. This worker flag is supported in Node 22.19.0 and Node 24.14.0. The root ESM package and erasable TypeScript syntax work without an external loader. This PoC is for Node, not Bun.
 
-1. The host parses and validates the selection, resolves its trusted module URL, and starts one `Worker` for that entry per valid command. Inside the guarded lifecycle, it creates a unique directory with `mkdtemp('/tmp/pi-worker-thread-poc-')` and writes fresh nonsecret test text to `host.txt`.
-2. It calls `run()` over `postMessage` with typed **file paths only**, not the host file's contents. While the host waits, the worker calls host `sessionInfo()` and receives current session data and a token.
+1. The host parses and validates the selection, resolves its trusted module URL, and starts one `Worker` at the shared runtime per valid command. Inside the guarded lifecycle, it creates a unique directory with `mkdtemp('/tmp/pi-worker-thread-poc-')` and writes fresh nonsecret test text to `host.txt`.
+2. The runner creates the connection and binds `session` before dynamically importing the selected module. It checks the module's exported identity and `main` function. The host calls internal `run()` over `postMessage` with typed **file paths only**, not the host file's contents. The runner waits for the import, then invokes `main(input)`. While the host waits, the module calls `session.sessionInfo()` and receives current session data and a token.
 3. For normal/default and prompt modes, the worker uses Node `readFile(hostPath)` and writes its own fresh test text with `writeFile(workerPath)`. It returns the readback and its written text/path in a typed receipt. Fail/timeout/crash diagnostics stop before this step.
-4. In prompt mode it also calls host `prompt({ text: "hello world" })`. The host observes `agent_start`, captures assistant text at `agent_end`, and resolves at `agent_settled` (which covers retries and continuations).
+4. In prompt mode it also calls `session.prompt({ text: "hello world" })`. The host observes `agent_start`, captures assistant text at `agent_end`, and resolves at `agent_settled` (which covers retries and continuations).
 5. On return, the host checks the entry's own `workerDefinition` against its selection and independently uses `readFile(workerPath)`. It compares the worker's host-file readback with its original text, and its own worker-file readback with the worker's receipt. Neither direction can pass on a path mismatch.
-6. The host cancels pending prompt work, sends a shutdown control message, and waits for thread exit, including on file I/O failure. After 750 ms it falls back to `worker.terminate()`.
+6. The host cancels pending prompt work, sends a shutdown control message, and waits for thread exit, including on file I/O failure. The runner closes the SDK binding, RPC, and port. After 750 ms the host falls back to `worker.terminate()`.
 
 The directory has mode `0700`; files use mode `0600` and exclusive creation (`wx`) to avoid overwriting existing files. File contents contain only an identifiable test label and a fresh UUID, never command arguments, model output, session data, or credentials. Files are retained for operator inspection: there is no file deletion or automatic cleanup. Each command/test run can add a directory under `/tmp`, so these files accumulate.
 
@@ -116,7 +145,7 @@ sequenceDiagram
     actor User
     participant Pi as Pi harness / active session
     participant Ext as Extension (main thread)
-    participant Worker as Selected TS entry + shared runtime (worker thread)
+    participant Worker as Shared runner + selected TS module (worker thread)
     participant FS as Local filesystem (/tmp)
     participant Model as Configured model provider
 
@@ -130,8 +159,9 @@ sequenceDiagram
     Pi->>Ext: Invoke command handler(args, ctx)
     Ext->>Ext: Validate selection, reject invalid options before any work
     Ext->>Ext: Resolve trusted worker.ts OR worker-secondary.ts URL
-    Ext->>Worker: new Worker(selected module URL)
-    Worker->>Worker: Entry injects its own definition into startWorker()
+    Ext->>Worker: new Worker(shared runtime URL, selectedWorker)
+    Worker->>Worker: Create connection and bind session SDK
+    Worker->>Worker: Dynamically import selected module, verify exported identity
     Note over Ext,Worker: Same PID, different thread IDs and V8 isolates<br/>Native TypeScript stripping in worker
 
     Ext->>FS: mkdtemp /tmp/pi-worker-thread-poc-* (0700)
@@ -139,8 +169,9 @@ sequenceDiagram
     Ext->>FS: writeFile host.txt (fresh test text, wx, 0600)
     Ext->>Worker: RPC run(text, mode, session snapshot, file paths)
     Note over Ext,Worker: Typed messages via postMessage / structured clone<br/>Host awaits run(), but still handles callbacks
-
-    Worker->>Ext: RPC sessionInfo(actual definition and worker identity)
+    Worker->>Worker: Await module import, invoke main(input)
+    Worker->>Worker: main calls session.sessionInfo()
+    Worker->>Ext: Internal RPC sessionInfo(runner-attached identity)
     Ext->>Pi: Read live session ID and cwd
     Pi-->>Ext: Session data
     Ext->>Pi: Notify WORKER_THREAD_POC_PROGRESS
@@ -153,7 +184,8 @@ sequenceDiagram
     alt hello mode (also the default)
         Worker->>Worker: Apply entry's transform and include callback token
     else prompt mode
-        Worker->>Ext: RPC prompt("hello world")
+        Worker->>Worker: session.prompt({ text: "hello world" })
+        Worker->>Ext: Internal RPC prompt("hello world")
         Ext->>Ext: Check idle session and active model
         Ext->>Pi: Subscribe to lifecycle events
         Ext->>Ext: Resolve authentication and recheck session state
@@ -178,7 +210,7 @@ sequenceDiagram
     Ext->>Ext: Check definition match, same PID, different threads, both file checks
     Note over Ext,FS: Retain both files for inspection, no deletion
     Ext->>Worker: Shutdown control message
-    Worker->>Worker: Close RPC and parentPort
+    Worker->>Worker: Close session binding, RPC, and parentPort
     Worker-->>Ext: Thread exit event
     Note over Ext,Worker: Fallback: terminate() after 750 ms if needed
 
@@ -208,7 +240,7 @@ npm run test:pi
 npm run test:prompt
 ```
 
-Real Worker tests load both native TS entries, verify their distinct output and actual identity despite contradictory host-side `workerData` labels, and check the typed callback, two-way files, prompt, failure, timeout, crash, and recovery. Parser tests cover valid forms, preserved text, default text, and invalid options. Existing tests still cover missing input files, refusal to overwrite existing output, and recovery after I/O errors. Host-verifier tests cover false readbacks, false written-text receipts, substituted paths, and missing output. CLI tests switch default → secondary → explicit primary in one running Pi process/session without reload, verify each module URL/definition, and prove invalid-selection recovery without creating files or starting model work. Both definitions run the fixture prompt in one session. Tests independently read retained files, check permissions, and print representative evidence.
+Real Worker tests use the shared runner to load both native TS modules, verify their distinct output and exported identity despite contradictory extra `workerData` labels, and check the typed callback, two-way files, prompt, failure, timeout, crash, and recovery. SDK tests cover binding before import and `main()`, shared helper imports, concurrent and replacement Worker isolation, unbound/closed errors, rejected rebinding, load failures, shutdown during pending import/main calls, and prevention of late `main()` execution after shutdown. Strict compiler checks cover the facade and selected-method client types. Parser tests cover valid forms, preserved text, default text, and invalid options. Existing tests still cover missing input files, refusal to overwrite existing output, and recovery after I/O errors. Host-verifier tests cover false readbacks, false written-text receipts, substituted paths, and missing output. CLI tests switch default → secondary → explicit primary in one running Pi process/session without reload, verify each module URL/definition, and prove invalid-selection recovery without creating files or starting model work. Both definitions run the fixture prompt in one session. Tests independently read retained files, check permissions, and print representative evidence.
 
 The CLI integration suite also starts a fresh Pi process with `NODE_OPTIONS=--no-experimental-strip-types` and verifies that the actual extension still completes a native Worker call. The test sets only that child's environment; it does not change the test runner's global environment.
 

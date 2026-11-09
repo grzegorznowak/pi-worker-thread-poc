@@ -6,8 +6,15 @@ const entries: Record<WorkerDefinitionName, string> = {
   secondary: "./worker-secondary.ts",
 };
 
+export function requireWorkerName(value: unknown): WorkerDefinitionName {
+  if (value !== "primary" && value !== "secondary") {
+    throw new Error("--worker requires primary or secondary. Usage: /worker-thread-poc [--worker primary|secondary] [text]");
+  }
+  return value;
+}
+
 export function workerModuleUrl(name: WorkerDefinitionName): URL {
-  return new URL(entries[name], import.meta.url);
+  return new URL(entries[requireWorkerName(name)], import.meta.url);
 }
 
 export function parseInvocation(args: string): {
@@ -19,11 +26,7 @@ export function parseInvocation(args: string): {
   let selectedWorker: WorkerDefinitionName = "primary";
   const selection = /^--worker(?:\s+(\S+))?(?:\s+([\s\S]*))?$/.exec(text);
   if (selection) {
-    const name = selection[1];
-    if (name !== "primary" && name !== "secondary") {
-      throw new Error("--worker requires primary or secondary. Usage: /worker-thread-poc [--worker primary|secondary] [text]");
-    }
-    selectedWorker = name;
+    selectedWorker = requireWorkerName(selection[1]);
     text = (selection[2] ?? "").trim();
   }
   if (/(?:^|\s)--worker(?:\s|=|$)/.test(text)) {

@@ -3,7 +3,7 @@ import { Worker, isMainThread, threadId } from "node:worker_threads";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { shutdownMessage, type HostAPI, type HostReceipt, type WorkerAPI, type WorkerDefinitionName } from "./contracts.ts";
 import { createFileExchange, verifyFileExchange, type PreparedFileExchange } from "./file-exchange.ts";
-import { RpcPeer } from "./rpc.ts";
+import { createClient, RpcPeer } from "./rpc.ts";
 import { createSessionPrompter } from "./session-prompt.ts";
 import { parseInvocation, workerModuleUrl } from "./worker-selection.ts";
 
@@ -37,7 +37,8 @@ export default function workerThreadPoc(pi: ExtensionAPI) {
       let callback: HostReceipt | undefined;
       // Pi loads index.ts through jiti. Run the worker with native erasable TS:
       // omit host execArgv loaders and explicitly override NODE_OPTIONS disabling stripping.
-      const worker = new Worker(moduleUrl, {
+      const worker = new Worker(new URL("./worker-runtime.ts", import.meta.url), {
+        workerData: { selectedWorker },
         execArgv: ["--experimental-strip-types"],
         stdout: true, // Never forward worker console output into Pi's RPC JSONL.
       });
@@ -103,12 +104,13 @@ export default function workerThreadPoc(pi: ExtensionAPI) {
         }
       })();
       active.add(stop);
+      const workerApi = createClient(rpc, ["run"]);
       let report: Record<string, unknown>;
       let preparedFiles: PreparedFileExchange | undefined;
       try {
         preparedFiles = await createFileExchange();
         if (ctx.hasUI) ctx.ui.setStatus("worker-thread-poc", `calling thread ${workerThreadId}`);
-        const result = await rpc.call("run", {
+        const result = await workerApi.run({
           text,
           mode,
           filePaths: { hostPath: preparedFiles.hostPath, workerPath: preparedFiles.workerPath },

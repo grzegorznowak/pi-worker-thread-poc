@@ -9,7 +9,8 @@ import { RpcPeer } from "../.pi/extensions/worker-thread-poc/rpc.ts";
 import { workerModuleUrl } from "../.pi/extensions/worker-thread-poc/worker-selection.ts";
 
 const options = { timeout: 4_000 };
-const workerUrl = new URL("../.pi/extensions/worker-thread-poc/worker.ts", import.meta.url);
+const workerUrl = workerModuleUrl("primary");
+const runnerUrl = new URL("../.pi/extensions/worker-thread-poc/worker-runtime.ts", import.meta.url);
 const snapshot = { cwd: process.cwd(), sessionId: "worker-test-session" };
 const promptReply: PromptReply = {
   sessionId: snapshot.sessionId, text: "test host answer", stopReason: "stop", aborted: false,
@@ -18,8 +19,10 @@ const promptReply: PromptReply = {
 function start(t: TestContext, entry = workerUrl) {
   // Deliberately lie in host-side data. Identity must come from the loaded entry.
   const claimedName = entry.href === workerModuleUrl("secondary").href ? "primary" : "secondary";
-  const worker = new Worker(entry, { execArgv: ["--experimental-strip-types"], stdout: true, stderr: true,
-    workerData: { selectedWorker: claimedName, workerDefinition: claimedName } });
+  const selectedWorker = entry.href === workerModuleUrl("secondary").href ? "secondary" : "primary";
+  const builtIn = [workerModuleUrl("primary").href, workerModuleUrl("secondary").href].includes(entry.href);
+  const worker = new Worker(builtIn ? runnerUrl : entry, { execArgv: ["--experimental-strip-types"], stdout: true, stderr: true,
+    workerData: { selectedWorker, workerDefinition: claimedName, workerModuleUrl: "file:///not-allowed.ts" } });
   const workerThreadId = worker.threadId;
   // Drain captured output without letting Worker output corrupt the test runner protocol.
   worker.stdout.resume();

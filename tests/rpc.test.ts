@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { RpcPeer, type Message } from "../.pi/extensions/worker-thread-poc/rpc.ts";
+import { createClient, RpcPeer, type Message } from "../.pi/extensions/worker-thread-poc/rpc.ts";
 
 type API = Record<string, { params: unknown; result: unknown }>;
 type Handlers<T extends API> = {
@@ -29,6 +29,58 @@ function pair<Host extends API, Worker extends API>(
   t.after(() => { host.close(); worker.close(); });
   return { host, worker, fromHost, fromWorker };
 }
+
+test("createClient exposes the listed methods and forwards params and timeouts", options, async (t) => {
+  type Host = { echo: { params: string; result: string }; slow: { params: string; result: string } };
+  type Worker = { none: { params: undefined; result: undefined } };
+  const { host, worker } = pair<Host, Worker>(t, {
+    echo: async (input) => `echo:${input}`,
+    slow: async () => { await new Promise((resolve) => setTimeout(resolve, 200)); return "done"; },
+  }, { none: async () => undefined });
+
+  // The worker peer's remote side is Host, so its client can call host methods.
+  const hostApi = createClient(worker, ["echo", "slow"]);
+  assert.equal(typeof hostApi.echo, "function");
+  assert.equal(typeof hostApi.slow, "function");
+  assert.equal((hostApi as Record<string, unknown>).unknown, undefined);
+  assert.deepEqual(Object.keys(hostApi).sort(), ["echo", "slow"]);
+  const echoOnly = createClient(worker, ["echo"]);
+  assert.deepEqual(Object.keys(echoOnly), ["echo"]);
+  assert.equal("slow" in echoOnly, false);
+  // Compile-only checks: a partial client must not claim absent methods exist.
+  function checkTypes() {
+    const result: Promise<string> = echoOnly.echo("typed");
+    // @ts-expect-error slow was not selected
+    echoOnly.slow("x");
+    // @ts-expect-error echo takes a string
+    echoOnly.echo(123);
+    // @ts-expect-error not a method in Host
+    createClient(worker, ["missing"]);
+    return result;
+  }
+  void checkTypes;
+
+  assert.equal(await hostApi.echo("hi"), "echo:hi");
+  // Timeout is forwarded to the underlying call.
+  await assert.rejects(hostApi.slow("x", 50), /RPC timeout: slow/);
+
+  // Peer methods remain available for direct use.
+  assert.equal(await host.call("none", undefined), undefined);
+});
+
+test("createClient propagates handler errors and close state", options, async (t) => {
+  type Host = { boom: { params: string; result: string } };
+  type Worker = { none: { params: undefined; result: undefined } };
+  const { host, worker } = pair<Host, Worker>(t, {
+    boom: async () => { throw new Error("handler exploded"); },
+  }, { none: async () => undefined });
+  const hostApi = createClient(worker, ["boom"]);
+  await assert.rejects(hostApi.boom("x"), /handler exploded/);
+
+  worker.close(new Error("peer closed"));
+  await assert.rejects(hostApi.boom("x"), /peer closed/);
+  void host; // Host peer remains referenced until teardown.
+});
 
 test("worker can await an asynchronous host callback while the host awaits the worker", options, async (t) => {
   type Host = { context: { params: string; result: string } };

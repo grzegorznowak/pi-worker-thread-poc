@@ -1,9 +1,30 @@
-// Small, symmetric typed SDK: either peer can call while servicing a request.
+// Internal symmetric transport: either peer can call while servicing a request.
 // Contracts are compile-time checks, not runtime validation or a security boundary.
 type API = Record<string, { params: unknown; result: unknown }>;
 type Handlers<T extends API> = {
   [K in keyof T]: (params: T[K]["params"]) => T[K]["result"] | Promise<T[K]["result"]>;
 };
+
+export type ApiClient<Remote extends API> = {
+  [K in keyof Remote]: (params: Remote[K]["params"], timeoutMs?: number) => Promise<Remote[K]["result"]>;
+};
+
+// The return type contains only the selected methods, never the whole Remote API.
+export function createClient<Remote extends API, Local extends API, const Methods extends readonly (keyof Remote & string)[]>(
+  rpc: RpcPeer<Remote, Local>,
+  methods: Methods,
+): ApiClient<Pick<Remote, Methods[number]>> {
+  const api = {} as ApiClient<Pick<Remote, Methods[number]>>;
+  for (const method of methods) {
+    const name = method as string;
+    Object.defineProperty(api, name, {
+      enumerable: true,
+      value: (params: unknown, timeoutMs?: number) =>
+        rpc.call(name as keyof Remote & string, params, timeoutMs),
+    });
+  }
+  return api;
+}
 const channel = "pi-worker-thread-poc/1";
 export type Message =
   | { channel: typeof channel; kind: "request"; id: string; method: string; params: unknown }
