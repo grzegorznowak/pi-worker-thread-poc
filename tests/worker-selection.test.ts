@@ -41,8 +41,12 @@ for (const args of [
   });
 }
 
-test("trusted built-in names resolve to distinct native TypeScript entries", () => {
-  assert.equal(workerModuleUrl("primary").pathname.endsWith("/worker.ts"), true);
-  assert.equal(workerModuleUrl("secondary").pathname.endsWith("/worker-secondary.ts"), true);
+test("trusted built-in names resolve to exact native TypeScript entries outside the plugin", () => {
+  const pluginUrl = new URL("../.pi/extensions/worker-thread-poc/", import.meta.url);
+  for (const [name, filename] of [["primary", "worker.ts"], ["secondary", "worker-secondary.ts"]] as const) {
+    const url = workerModuleUrl(name);
+    assert.equal(url.href, new URL(`../workers/demo/${filename}`, import.meta.url).href);
+    assert.equal(url.href.startsWith(pluginUrl.href), false, "behavior must live outside the plugin");
+  }
   assert.notEqual(workerModuleUrl("primary").href, workerModuleUrl("secondary").href);
 });

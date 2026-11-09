@@ -3,6 +3,7 @@ import { test, type TestContext } from "node:test";
 import { MessageChannel, Worker, threadId } from "node:worker_threads";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { isBuiltin } from "node:module";
 import { session } from "../.pi/extensions/worker-thread-poc/api/session.ts";
 import { bindSession, closeSession } from "../.pi/extensions/worker-thread-poc/session-binding.ts";
 import { RpcPeer, type Message } from "../.pi/extensions/worker-thread-poc/rpc.ts";
@@ -205,11 +206,23 @@ test("standalone worker with no imports receives a live API and keeps JSON input
   assert.equal(await instance.exited, 0);
 });
 
-test("built-in workers and shared task have no session infrastructure imports", options, async () => {
+test("demo worker sources stay outside the plugin with no plugin dependencies", options, async () => {
+  const bundleUrl = new URL("../workers/demo/", import.meta.url);
   for (const name of ["worker.ts", "worker-secondary.ts", "worker-task.ts"]) {
-    const source = await readFile(new URL(`../.pi/extensions/worker-thread-poc/${name}`, import.meta.url), "utf8");
-    assert.doesNotMatch(source, /api\/session|session-binding/, name);
-    await import(`../.pi/extensions/worker-thread-poc/${name}`);
+    const moduleUrl = new URL(name, bundleUrl);
+    const source = await readFile(moduleUrl, "utf8");
+    assert.doesNotMatch(source, /\.pi\/|api\/session|session-binding/, name);
+    await assert.rejects(readFile(new URL(`../.pi/extensions/worker-thread-poc/${name}`, import.meta.url)),
+      { code: "ENOENT" }, `${name} must not remain in the plugin`);
+    // This small source bundle uses static imports only: Node builtins or local helpers.
+    assert.doesNotMatch(source, /\bimport\s*\(|\brequire\s*\(/, name);
+    for (const [, specifier] of source.matchAll(/\b(?:from\s*|import\s*)["']([^"']+)["']/g)) {
+      if (isBuiltin(specifier)) continue;
+      assert.match(specifier, /^\.{1,2}\//, `${name}: no external dependencies`);
+      assert.ok(new URL(specifier, moduleUrl).href.startsWith(bundleUrl.href),
+        `${name}: ${specifier} must stay within the standalone bundle`);
+    }
+    await import(moduleUrl.href);
   }
 });
 

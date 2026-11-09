@@ -2,8 +2,8 @@ import type { WorkerAPI, WorkerDefinitionName } from "./contracts.ts";
 
 // Trusted built-in entries only. Never turn command text into a module path.
 const entries: Record<WorkerDefinitionName, string> = {
-  primary: "./worker.ts",
-  secondary: "./worker-secondary.ts",
+  primary: "../../../workers/demo/worker.ts",
+  secondary: "../../../workers/demo/worker-secondary.ts",
 };
 
 export function requireWorkerName(value: unknown): WorkerDefinitionName {

@@ -34,7 +34,7 @@ Select a different entry in the **same running Pi session**, without `/reload`:
 /worker-thread-poc --worker primary hello
 ```
 
-The outputs start with `HELLO`, `OLLEH`, and `HELLO`. Each invocation starts the shared `worker-runtime.ts` entry with an allowlisted selection in `workerData`. The runner binds the session API, then dynamically imports `worker.ts` for `primary` or `worker-secondary.ts` for `secondary`. These are separate behavior modules, each with its own exported identity, `main(input, { session })`, and text transform. No definition or API functions cross IPC.
+The outputs start with `HELLO`, `OLLEH`, and `HELLO`. Each invocation starts the shared `worker-runtime.ts` entry with an allowlisted selection in `workerData`. The runner binds the session API, then dynamically imports `workers/demo/worker.ts` for `primary` or `workers/demo/worker-secondary.ts` for `secondary`. These are separate behavior modules, each with its own exported identity, `main(input, { session })`, and text transform. No definition or API functions cross IPC.
 
 Syntax: `/worker-thread-poc [--worker primary|secondary] [text]`. The optional selection must appear once, before text; the `--worker=value` form is not supported. With no text, either entry runs `hello`. Leading and trailing text whitespace is trimmed; internal spacing is kept. Missing/unsupported selections, repeated selections, and misplaced `--worker` options return an error before any worker, `/tmp` files, or model work starts. Other text remains normal input.
 
@@ -61,7 +61,7 @@ These demonstrate a remote exception, deadline, and worker-thread exit (code 7).
 
 ## Worker-facing session API
 
-Workers receive the plugin-owned `session` object as an argument to `main`. They do not import the plugin API, start a worker, create a connection, list RPC methods, or receive Pi's `pi` or `ctx` objects. The actual primary module is:
+Workers receive the plugin-owned `session` object as an argument to `main`. They do not import the plugin API, start a worker, create a connection, list RPC methods, or receive Pi's `pi` or `ctx` objects. The actual primary module, `workers/demo/worker.ts`, is:
 
 ```ts
 import { executeTask } from "./worker-task.ts";
@@ -109,24 +109,32 @@ Success requires the actual definition to match the selection, the reported PID 
 
 ## Files and flow
 
+The folders show two code ownership boundaries:
+
 ```text
-.pi/extensions/worker-thread-poc/
-  index.ts           project-local extension and worker lifecycle
-  contracts.ts       explicit data-only host/worker API contracts
-  file-exchange.ts   private test-file creation and independent host verification
-  rpc.ts             internal symmetric transport and typed method-client helper
-  worker-selection.ts small argument parser and trusted module mapping
-  worker.ts          primary main(input, { session }) (uppercase)
-  worker-secondary.ts secondary main(input, { session }) (reverse-uppercase)
-  worker-runtime.ts  native Worker entry, validates the selected built-in module
-  worker-runner.ts   connection setup, API injection, dynamic import, and lifecycle
-  session-binding.ts internal one-lifetime, isolate-local API binding
-  api/session.ts     infrastructure-owned typed session facade, injected into main
-  worker-task.ts     shared demo file exchange, diagnostics, and prompt behavior
-  session-prompt.ts  host-side same-session prompt lifecycle adapter
+.pi/extensions/worker-thread-poc/   plugin-owned infrastructure
+  index.ts                        project-local extension and worker lifecycle
+  contracts.ts                    data-only host/worker API contracts
+  file-exchange.ts                test-file creation and independent host verification
+  rpc.ts                          transport and typed method-client helper
+  worker-selection.ts             argument parser and trusted module mapping
+  worker-runtime.ts               native Worker entry, validates the selection
+  worker-runner.ts                connection, injection, import, and lifecycle
+  session-binding.ts              one-lifetime, isolate-local API binding
+  api/session.ts                  typed session facade, injected into main
+  session-prompt.ts               host-side same-session prompt adapter
+
+workers/demo/                     standalone worker behavior bundle
+  worker.ts                       primary main(input, { session }) (uppercase)
+  worker-secondary.ts             secondary main(input, { session }) (reverse-uppercase)
+  worker-task.ts                  shared file exchange, diagnostics, and prompt behavior
 ```
 
-Pi discovers `index.ts`, not each helper as an extension. Pi uses jiti to load the extension; Node runs `worker-runtime.ts`, the selected behavior module, and their imports through native TypeScript stripping. `execArgv: ["--experimental-strip-types"]` replaces host command-line flags and explicitly enables stripping, even when `NODE_OPTIONS=--no-experimental-strip-types` is inherited. An empty `execArgv` alone does not override `NODE_OPTIONS`. This worker flag is supported in Node 22.19.0 and Node 24.14.0. The root ESM package and erasable TypeScript syntax work without an external loader. This PoC is for Node, not Bun.
+`workers/demo/` is a source bundle, not a compiled artifact or a separate package. It imports only its local helper and Node built-ins; it has no plugin imports. The plugin selects its entry by a trusted, module-relative URL, then injects the session API into `main`. No path depends on the shell's current directory.
+
+Code ownership is separate from thread placement. The plugin owns `worker-runtime.ts`, `worker-runner.ts`, RPC, and the session facade even though they execute inside the worker thread. The behavior bundle owns the demo task, not connection setup or lifecycle management.
+
+Pi discovers the plugin's `index.ts`, not `workers/demo/` or each helper as an extension. Pi uses jiti to load the extension; Node runs `worker-runtime.ts`, the selected behavior module, and their imports through native TypeScript stripping. `execArgv: ["--experimental-strip-types"]` replaces host command-line flags and explicitly enables stripping, even when `NODE_OPTIONS=--no-experimental-strip-types` is inherited. An empty `execArgv` alone does not override `NODE_OPTIONS`. This worker flag is supported in Node 22.19.0 and Node 24.14.0. The root ESM package and erasable TypeScript syntax work without an external loader. This PoC is for Node, not Bun.
 
 1. The host parses and validates the selection, resolves its trusted module URL, and starts one `Worker` at the shared runtime per valid command. Inside the guarded lifecycle, it creates a unique directory with `mkdtemp('/tmp/pi-worker-thread-poc-')` and writes fresh nonsecret test text to `host.txt`.
 2. The runner creates the connection and binds `session` before dynamically importing the selected module. It checks the module's exported identity and `main` function. The host calls internal `run()` over `postMessage` with typed **file paths only**, not the host file's contents. The runner waits for the import, then invokes `main(JSON.stringify(input), { session })` locally in that isolate. While the host waits, the module calls `session.sessionInfo()` and receives current session data and a token.
@@ -246,7 +254,7 @@ npm run test:pi
 npm run test:prompt
 ```
 
-Real Worker tests use the shared runner to load both native TS modules, verify their distinct output and exported identity despite contradictory extra `workerData` labels, and check the typed callback, two-way files, prompt, failure, timeout, crash, and recovery. API tests cover the plain JSON string input/output boundary, module evaluation without API calls, injection into `main()` and explicit helper arguments, a standalone worker with no imports that uses both live API methods, concurrent and replacement Worker isolation, unbound/closed infrastructure errors, rejected rebinding, load failures before `main()`, shutdown during pending main API calls, and prevention of late `main()` execution after shutdown. Strict compiler checks cover the facade and selected-method client types. Parser tests cover valid forms, preserved text, default text, and invalid options. Existing tests still cover missing input files, refusal to overwrite existing output, and recovery after I/O errors. Host-verifier tests cover false readbacks, false written-text receipts, substituted paths, and missing output. CLI tests switch default → secondary → explicit primary in one running Pi process/session without reload, verify each module URL/definition, and prove invalid-selection recovery without creating files or starting model work. Both definitions run the fixture prompt in one session. Tests independently read retained files, check permissions, and print representative evidence.
+Real Worker tests use the shared runner to load both native TS modules, verify their distinct output and exported identity despite contradictory extra `workerData` labels, and check the typed callback, two-way files, prompt, failure, timeout, crash, and recovery. API tests cover the plain JSON string input/output boundary, module evaluation without API calls, injection into `main()` and explicit helper arguments, a standalone worker with no imports that uses both live API methods, the demo bundle's location and lack of plugin dependencies, concurrent and replacement Worker isolation, unbound/closed infrastructure errors, rejected rebinding, load failures before `main()`, shutdown during pending main API calls, and prevention of late `main()` execution after shutdown. Strict compiler checks cover the facade and selected-method client types. Parser tests cover valid forms, preserved text, default text, and invalid options. Existing tests still cover missing input files, refusal to overwrite existing output, and recovery after I/O errors. Host-verifier tests cover false readbacks, false written-text receipts, substituted paths, and missing output. CLI tests switch default → secondary → explicit primary in one running Pi process/session without reload, verify each module URL/definition, and prove invalid-selection recovery without creating files or starting model work. Both definitions run the fixture prompt in one session. Tests independently read retained files, check permissions, and print representative evidence.
 
 The CLI integration suite also starts a fresh Pi process with `NODE_OPTIONS=--no-experimental-strip-types` and verifies that the actual extension still completes a native Worker call. The test sets only that child's environment; it does not change the test runner's global environment.
 

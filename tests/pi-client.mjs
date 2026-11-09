@@ -153,7 +153,7 @@ export function assertSelection(report, progress, expected) {
   assert.equal(report.workerDefinition, expected, "actual entry identity, not just the host selection");
   assert.equal(report.workerDefinitionMatches, true);
   const filename = expected === "primary" ? "worker.ts" : "worker-secondary.ts";
-  assert.equal(report.workerModuleUrl, new URL(`../.pi/extensions/worker-thread-poc/${filename}`, import.meta.url).href);
+  assert.equal(report.workerModuleUrl, new URL(`../workers/demo/${filename}`, import.meta.url).href);
   assert.equal(progress.selectedWorker, expected);
   assert.equal(progress.workerDefinition, expected);
   assert.equal(progress.workerModuleUrl, report.workerModuleUrl);
