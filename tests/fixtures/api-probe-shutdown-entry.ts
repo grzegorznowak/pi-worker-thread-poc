@@ -1,5 +1,4 @@
 import { workerData, type MessagePort } from "node:worker_threads";
-import { session } from "../../.pi/extensions/worker-thread-poc/api/session.ts";
 
 const probePort = workerData.probePort as MessagePort;
 
@@ -16,9 +15,10 @@ async function pendingRequest(request: Promise<unknown>): Promise<never> {
   }
 }
 
-if (workerData.shutdownMode === "import") await pendingRequest(session.sessionInfo());
+probePort.postMessage({ event: "module-imported" });
 export const workerDefinition = "primary";
-export async function main(_input: string): Promise<string> {
+export async function main(_input: string, { session }: { session: any }): Promise<string> {
   probePort.postMessage({ event: "main-started" });
-  return pendingRequest(session.prompt({ text: "pending shutdown probe" }));
+  return pendingRequest(workerData.shutdownMode === "sessionInfo"
+    ? session.sessionInfo() : session.prompt({ text: "pending shutdown probe" }));
 }

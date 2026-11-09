@@ -1,11 +1,12 @@
 import { isMainThread, threadId, type MessagePort } from "node:worker_threads";
 import { createClient, RpcPeer } from "./rpc.ts";
 import { bindSession, closeSession } from "./session-binding.ts";
+import { session, type WorkerSession } from "./api/session.ts";
 import { shutdownMessage, type HostAPI, type WorkerAPI, type WorkerDefinitionName } from "./contracts.ts";
 
 type Entry = {
   workerDefinition: WorkerDefinitionName;
-  main(input: string): Promise<string>;
+  main(input: string, dependencies: { session: Readonly<WorkerSession> }): Promise<string>;
 };
 
 /** Internal infrastructure. The runtime supplies a trusted, allowlisted loader. */
@@ -18,12 +19,13 @@ export function serveWorker(port: MessagePort, selectedWorker: WorkerDefinitionN
     async run(input) {
       const entry = await ready;
       if (closed) throw new Error("Worker session API is closed");
-      const output = JSON.parse(await entry.main(JSON.stringify(input)));
+      // Both the API object and main live in this isolate. Only data crosses IPC.
+      const output = JSON.parse(await entry.main(JSON.stringify(input), { session }));
       return { ...output, ...identity, workerDefinition: entry.workerDefinition };
     },
   });
   const host = createClient(rpc, ["sessionInfo", "prompt"]);
-  // Binding precedes even module evaluation. Workers and their helpers only import session.
+  // Infrastructure owns the lifetime binding. Behavior receives the API only at main().
   bindSession({
     sessionInfo: () => host.sessionInfo({ ...identity, workerDefinition: selectedWorker,
       message: "Worker requesting live Pi session data" }),
@@ -59,7 +61,7 @@ export function serveWorker(port: MessagePort, selectedWorker: WorkerDefinitionN
   });
   // Startup errors must reach the host's Worker error/exit listeners, even before run().
   void ready.catch((error: unknown) => {
-    if (closed) return; // Intentional shutdown can reject an import-time API call.
+    if (closed) return; // Ignore a loader failure after intentional shutdown.
     shutdown(error instanceof Error ? error : new Error(String(error)));
     setImmediate(() => { throw error; });
   });

@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { session } from "./api/session.ts";
 
-// Common demo behavior. No transport or connection setup belongs in worker code.
-export async function executeTask(input: string,
+// Common demo behavior. The caller passes the live API, with temporary edge typing.
+// No transport, singleton import, or connection setup belongs in worker code.
+export async function executeTask(input: string, session: any,
   receipt: { token: string }, transform: (text: string) => string): Promise<string> {
   const { text, snapshot, mode, filePaths } = JSON.parse(input);
   if (mode === "fail") throw new Error("Intentional worker failure");

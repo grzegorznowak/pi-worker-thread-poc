@@ -7,7 +7,7 @@
 > is not a security boundary. Workers share the host process and OS permissions.
 > Expect rough edges, missing features, and behavior that may change.
 
-A project-local Pi extension selects one of two native TypeScript worker modules at invocation time. A shared runner binds a small typed session API before importing the selected module and calling its `main(input)`. The worker uses that API while the host awaits its result. Both use **the same PID and different thread IDs**. The original `/home/vscode/pi-worker-poc` project is not changed.
+A project-local Pi extension selects one of two native TypeScript worker modules at invocation time. A shared runner connects a small typed session API, imports the selected module, and injects the API into `main(input, { session })`. The worker uses that API while the host awaits its result. Both use **the same PID and different thread IDs**. The original `/home/vscode/pi-worker-poc` project is not changed.
 
 ## Run
 
@@ -34,7 +34,7 @@ Select a different entry in the **same running Pi session**, without `/reload`:
 /worker-thread-poc --worker primary hello
 ```
 
-The outputs start with `HELLO`, `OLLEH`, and `HELLO`. Each invocation starts the shared `worker-runtime.ts` entry with an allowlisted selection in `workerData`. The runner binds the session API, then dynamically imports `worker.ts` for `primary` or `worker-secondary.ts` for `secondary`. These are separate behavior modules, each with its own exported identity, `main(input)`, and text transform. No definition functions cross IPC.
+The outputs start with `HELLO`, `OLLEH`, and `HELLO`. Each invocation starts the shared `worker-runtime.ts` entry with an allowlisted selection in `workerData`. The runner binds the session API, then dynamically imports `worker.ts` for `primary` or `worker-secondary.ts` for `secondary`. These are separate behavior modules, each with its own exported identity, `main(input, { session })`, and text transform. No definition or API functions cross IPC.
 
 Syntax: `/worker-thread-poc [--worker primary|secondary] [text]`. The optional selection must appear once, before text; the `--worker=value` form is not supported. With no text, either entry runs `hello`. Leading and trailing text whitespace is trimmed; internal spacing is kept. Missing/unsupported selections, repeated selections, and misplaced `--worker` options return an error before any worker, `/tmp` files, or model work starts. Other text remains normal input.
 
@@ -61,29 +61,31 @@ These demonstrate a remote exception, deadline, and worker-thread exit (code 7).
 
 ## Worker-facing session API
 
-Workers import the plugin-owned `session` object. They do not start a worker, create a connection, list RPC methods, or receive Pi's `pi` or `ctx` objects. The actual primary module is:
+Workers receive the plugin-owned `session` object as an argument to `main`. They do not import the plugin API, start a worker, create a connection, list RPC methods, or receive Pi's `pi` or `ctx` objects. The actual primary module is:
 
 ```ts
-import { session } from "./api/session.ts";
 import { executeTask } from "./worker-task.ts";
 
 export const workerDefinition = "primary";
-export async function main(input: string): Promise<string> {
-  return executeTask(input, await session.sessionInfo(), (text) => text.toUpperCase());
+export async function main(input: string, { session }: { session: any }): Promise<string> {
+  // Temporary edge typing avoids a plugin API import. The runner owns the typed API.
+  return executeTask(input, session, await session.sessionInfo(), (text) => text.toUpperCase());
 }
 ```
 
-For now, the worker boundary is plain JSON strings: `main(input: string): Promise<string>`. The runner calls `JSON.stringify(input)` before `main()` and parses the returned JSON into the existing host report. There are no shared worker input/output types, classes, or wrappers. This is a temporary simple boundary, not a schema framework.
+For now, worker input and output remain plain JSON strings: `input: string` and `Promise<string>`. The runner calls `main(JSON.stringify(input), { session })` and parses the returned JSON into the existing host report. The second argument holds live functions created in that same Worker isolate. It is not serialized or structured-cloned from the host. There are no shared worker input/output types, classes, or wrappers. This is a temporary simple boundary, not a schema framework.
 
-`executeTask()` parses the input with `JSON.parse()`, holds the shared demo file checks, diagnostics, and prompt behavior, then returns `JSON.stringify(result)`. In prompt mode, it uses the same facade:
+The worker edge and shared demo helper temporarily use explicit `any` for the injected session. This avoids plugin-relative type imports or a new dependency abstraction, but worker calls do not get compile-time API checks. The central `WorkerSession` interface, frozen facade, runner, contracts, and host implementation remain typed.
+
+`executeTask()` parses the input with `JSON.parse()`, holds the shared demo file checks, diagnostics, and prompt behavior, then returns `JSON.stringify(result)`. The worker passes `session` to the helper explicitly. Neither module needs the plugin API's runtime location. In prompt mode, the helper uses that injected object:
 
 ```ts
 const reply = await session.prompt({ text: "hello world" });
 ```
 
-`sessionInfo()` takes no identity arguments. The runner attaches the trusted selection and actual PID/thread identity. Both methods return typed promises; RPC stays inside the infrastructure. Adding a capability requires a facade method, a contract, and a host implementation, not changes to each worker's connection setup.
+`sessionInfo()` takes no identity arguments. The runner attaches the trusted selection and actual PID/thread identity. Both methods have typed promise results in the central API; RPC stays inside the infrastructure. Adding a capability requires a facade method, a contract, and a host implementation, not changes to each worker's connection setup.
 
-The runner binds the API **before module evaluation**, so imports and helpers can use it before `main()` starts. Imports share one frozen facade and one connection within that Worker isolate. Separate Workers have separate module state, even though they share a PID. Calls before binding or after closure reject with a clear lifecycle error; a closed binding cannot be reused. This is a selected host-capability API, not the full Pi SDK or a new session.
+The API becomes available to behavior at **`main()` call time**, not during module evaluation. The runner creates the connection and binds the frozen facade centrally before the dynamic import, but workers and helpers do not import that facade or use the API at import time. Infrastructure could still import it intentionally. This PoC retains one lifetime binding and one connection per Worker isolate. Separate Workers have separate module state, even though they share a PID. Calls through the infrastructure facade before binding or after closure reject with a clear lifecycle error; a closed binding cannot be reused. This is a selected host-capability API, not the full Pi SDK or a new session.
 
 ## Report
 
@@ -114,12 +116,12 @@ Success requires the actual definition to match the selection, the reported PID 
   file-exchange.ts   private test-file creation and independent host verification
   rpc.ts             internal symmetric transport and typed method-client helper
   worker-selection.ts small argument parser and trusted module mapping
-  worker.ts          primary module exporting main(input) (uppercase)
-  worker-secondary.ts secondary module exporting main(input) (reverse-uppercase)
+  worker.ts          primary main(input, { session }) (uppercase)
+  worker-secondary.ts secondary main(input, { session }) (reverse-uppercase)
   worker-runtime.ts  native Worker entry, validates the selected built-in module
-  worker-runner.ts   connection setup, API binding, dynamic import, and lifecycle
+  worker-runner.ts   connection setup, API injection, dynamic import, and lifecycle
   session-binding.ts internal one-lifetime, isolate-local API binding
-  api/session.ts     worker-facing typed session object, no transport setup
+  api/session.ts     infrastructure-owned typed session facade, injected into main
   worker-task.ts     shared demo file exchange, diagnostics, and prompt behavior
   session-prompt.ts  host-side same-session prompt lifecycle adapter
 ```
@@ -127,7 +129,7 @@ Success requires the actual definition to match the selection, the reported PID 
 Pi discovers `index.ts`, not each helper as an extension. Pi uses jiti to load the extension; Node runs `worker-runtime.ts`, the selected behavior module, and their imports through native TypeScript stripping. `execArgv: ["--experimental-strip-types"]` replaces host command-line flags and explicitly enables stripping, even when `NODE_OPTIONS=--no-experimental-strip-types` is inherited. An empty `execArgv` alone does not override `NODE_OPTIONS`. This worker flag is supported in Node 22.19.0 and Node 24.14.0. The root ESM package and erasable TypeScript syntax work without an external loader. This PoC is for Node, not Bun.
 
 1. The host parses and validates the selection, resolves its trusted module URL, and starts one `Worker` at the shared runtime per valid command. Inside the guarded lifecycle, it creates a unique directory with `mkdtemp('/tmp/pi-worker-thread-poc-')` and writes fresh nonsecret test text to `host.txt`.
-2. The runner creates the connection and binds `session` before dynamically importing the selected module. It checks the module's exported identity and `main` function. The host calls internal `run()` over `postMessage` with typed **file paths only**, not the host file's contents. The runner waits for the import, then invokes `main(JSON.stringify(input))`. While the host waits, the module calls `session.sessionInfo()` and receives current session data and a token.
+2. The runner creates the connection and binds `session` before dynamically importing the selected module. It checks the module's exported identity and `main` function. The host calls internal `run()` over `postMessage` with typed **file paths only**, not the host file's contents. The runner waits for the import, then invokes `main(JSON.stringify(input), { session })` locally in that isolate. While the host waits, the module calls `session.sessionInfo()` and receives current session data and a token.
 3. For normal/default and prompt modes, the worker uses Node `readFile(hostPath)` and writes its own fresh test text with `writeFile(workerPath)`. It returns a JSON string with the readback and its written text/path. Fail/timeout/crash diagnostics stop before this step.
 4. In prompt mode it also calls `session.prompt({ text: "hello world" })`. The host observes `agent_start`, captures assistant text at `agent_end`, and resolves at `agent_settled` (which covers retries and continuations).
 5. On return, the runner parses the JSON string into the internal RPC result. The host checks the entry's own `workerDefinition` against its selection and independently uses `readFile(workerPath)`. It compares the worker's host-file readback with its original text, and its own worker-file readback with the worker's receipt. Neither direction can pass on a path mismatch.
@@ -170,7 +172,8 @@ sequenceDiagram
     Ext->>FS: writeFile host.txt (fresh test text, wx, 0600)
     Ext->>Worker: RPC run(text, mode, session snapshot, file paths)
     Note over Ext,Worker: Typed messages via postMessage / structured clone<br/>Host awaits run(), but still handles callbacks
-    Worker->>Worker: Await module import, invoke main with JSON.stringify(input)
+    Worker->>Worker: Await module import, invoke main(JSON.stringify(input), { session })
+    Note over Worker: Inject live API locally in this isolate<br/>Behavior receives it at main time, not module evaluation
     Worker->>Worker: main calls session.sessionInfo()
     Worker->>Ext: Internal RPC sessionInfo(runner-attached identity)
     Ext->>Pi: Read live session ID and cwd
@@ -243,7 +246,7 @@ npm run test:pi
 npm run test:prompt
 ```
 
-Real Worker tests use the shared runner to load both native TS modules, verify their distinct output and exported identity despite contradictory extra `workerData` labels, and check the typed callback, two-way files, prompt, failure, timeout, crash, and recovery. API tests cover the plain JSON string input/output boundary, binding before import and `main()`, shared helper imports, concurrent and replacement Worker isolation, unbound/closed errors, rejected rebinding, load failures, shutdown during pending import/main calls, and prevention of late `main()` execution after shutdown. Strict compiler checks cover the facade and selected-method client types. Parser tests cover valid forms, preserved text, default text, and invalid options. Existing tests still cover missing input files, refusal to overwrite existing output, and recovery after I/O errors. Host-verifier tests cover false readbacks, false written-text receipts, substituted paths, and missing output. CLI tests switch default → secondary → explicit primary in one running Pi process/session without reload, verify each module URL/definition, and prove invalid-selection recovery without creating files or starting model work. Both definitions run the fixture prompt in one session. Tests independently read retained files, check permissions, and print representative evidence.
+Real Worker tests use the shared runner to load both native TS modules, verify their distinct output and exported identity despite contradictory extra `workerData` labels, and check the typed callback, two-way files, prompt, failure, timeout, crash, and recovery. API tests cover the plain JSON string input/output boundary, module evaluation without API calls, injection into `main()` and explicit helper arguments, a standalone worker with no imports that uses both live API methods, concurrent and replacement Worker isolation, unbound/closed infrastructure errors, rejected rebinding, load failures before `main()`, shutdown during pending main API calls, and prevention of late `main()` execution after shutdown. Strict compiler checks cover the facade and selected-method client types. Parser tests cover valid forms, preserved text, default text, and invalid options. Existing tests still cover missing input files, refusal to overwrite existing output, and recovery after I/O errors. Host-verifier tests cover false readbacks, false written-text receipts, substituted paths, and missing output. CLI tests switch default → secondary → explicit primary in one running Pi process/session without reload, verify each module URL/definition, and prove invalid-selection recovery without creating files or starting model work. Both definitions run the fixture prompt in one session. Tests independently read retained files, check permissions, and print representative evidence.
 
 The CLI integration suite also starts a fresh Pi process with `NODE_OPTIONS=--no-experimental-strip-types` and verifies that the actual extension still completes a native Worker call. The test sets only that child's environment; it does not change the test runner's global environment.
 

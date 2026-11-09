@@ -33,6 +33,10 @@ if (workerData.shutdownMode === "loader") {
     },
   }));
 } else {
-  serveWorker(parentPort, "primary", () => workerData.shutdownMode
-    ? import("./api-probe-shutdown-entry.ts") : import("./api-probe-entry.ts"));
+  serveWorker(parentPort, "primary", async () => {
+    const entry = await (workerData.shutdownMode ? import("./api-probe-shutdown-entry.ts")
+      : workerData.standalone ? import("./standalone/injected-worker.ts") : import("./api-probe-entry.ts"));
+    parentPort!.postMessage({ event: "module-imported" });
+    return entry;
+  });
 }
